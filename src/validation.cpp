@@ -30,6 +30,7 @@
 #include <kernel/warning.h>
 #include <logging/timer.h>
 #include <node/blockstorage.h>
+#include <node/recycle.h>
 #include <node/utxo_snapshot.h>
 #include <policy/ephemeral_policy.h>
 #include <policy/policy.h>
@@ -2184,7 +2185,8 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
         return DISCONNECT_FAILED;
     }
 
-    if (blockUndo.vtxundo.size() + 1 != block.vtx.size()) {
+    const size_t recycle_undos{pindex->nHeight - node::recycle::EXPIRY_BLOCKS >= 1 ? 1U : 0U};
+    if (blockUndo.vtxundo.size() + 1 != block.vtx.size() + recycle_undos) {
         LogError("DisconnectBlock(): block and undo data inconsistent\n");
         return DISCONNECT_FAILED;
     }
@@ -2236,6 +2238,12 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
             }
             // At this point, all of txundo.vprevout should have been moved out.
         }
+    }
+
+    CTxUndo* recycle_undo{recycle_undos ? &blockUndo.vtxundo.back() : nullptr};
+    if (!node::recycle::DisconnectBlock(view, pindex->nHeight, recycle_undo)) {
+        LogError("DisconnectBlock(): invalid recycle undo data\n");
+        return DISCONNECT_FAILED;
     }
 
     // move best block pointer to prevout block
@@ -2290,7 +2298,7 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
  *  can fail if those validity checks fail (among other reasons). */
 bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
-                               CCoinsViewCache& view, bool fJustCheck)
+                               CCoinsViewCache& view, bool fJustCheck, std::vector<COutPoint>* expired)
 {
     AssertLockHeld(cs_main);
     assert(pindex);
@@ -2604,10 +2612,16 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
              Ticks<SecondsDouble>(m_chainman.time_connect),
              Ticks<MillisecondsDouble>(m_chainman.time_connect) / m_chainman.num_blocks_total);
 
-    CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, params.GetConsensus());
-    if (block.vtx[0]->GetValueOut() > blockReward && state.IsValid()) {
-        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-cb-amount",
-                      strprintf("coinbase pays too much (actual=%d vs limit=%d)", block.vtx[0]->GetValueOut(), blockReward));
+    const CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, params.GetConsensus());
+    if (state.IsValid()) {
+        CTxUndo recycle_undo;
+        std::string recycle_error;
+        if (!node::recycle::ConnectBlock(view, block, pindex->nHeight, blockReward,
+                                         recycle_undo, recycle_error, expired)) {
+            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-recycle-state", recycle_error);
+        } else if (!recycle_undo.vprevout.empty()) {
+            blockundo.vtxundo.push_back(std::move(recycle_undo));
+        }
     }
     if (control) {
         auto parallel_result = control->Complete();
@@ -3058,6 +3072,7 @@ bool Chainstate::ConnectTip(
     // Apply the block atomically to the chain state.
     const auto time_2{SteadyClock::now()};
     SteadyClock::time_point time_3;
+    std::vector<COutPoint> expired_outpoints;
     // When adding aggregate statistics in the future, keep in mind that
     // num_blocks_total may be zero until the ConnectBlock() call below.
     LogDebug(BCLog::BENCH, "  - Load block from disk: %.2fms\n",
@@ -3065,7 +3080,7 @@ bool Chainstate::ConnectTip(
     {
         CCoinsViewCache& view{*m_coins_views->m_connect_block_view};
         const auto reset_guard{view.CreateResetGuard()};
-        bool rv = ConnectBlock(*block_to_connect, state, pindexNew, view);
+        bool rv = ConnectBlock(*block_to_connect, state, pindexNew, view, /*fJustCheck=*/false, &expired_outpoints);
         if (m_chainman.m_options.signals) {
             m_chainman.m_options.signals->BlockChecked(block_to_connect, state);
         }
@@ -3103,6 +3118,12 @@ bool Chainstate::ConnectTip(
     // Remove conflicting transactions from the mempool.;
     if (m_mempool) {
         m_mempool->removeForBlock(block_to_connect->vtx, pindexNew->nHeight);
+        for (const auto& outpoint : expired_outpoints) {
+            if (const auto it{m_mempool->mapNextTx.find(outpoint)}; it != m_mempool->mapNextTx.end()) {
+                const auto tx{it->second->GetSharedTx()};
+                m_mempool->removeRecursive(*tx, MemPoolRemovalReason::CONFLICT);
+            }
+        }
         disconnectpool.removeForBlock(block_to_connect->vtx);
     }
     // Update m_chain & related variables.
@@ -4790,16 +4811,21 @@ bool Chainstate::RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& in
         return false;
     }
 
+    CAmount fees{0};
     for (const CTransactionRef& tx : block.vtx) {
         if (!tx->IsCoinBase()) {
+            CAmount value_in{0};
             for (const CTxIn &txin : tx->vin) {
+                value_in += inputs.AccessCoin(txin.prevout).out.nValue;
                 inputs.SpendCoin(txin.prevout);
             }
+            fees += value_in - tx->GetValueOut();
         }
         // Pass check = true as every addition may be an overwrite.
         AddCoins(inputs, *tx, pindex->nHeight, true);
     }
-    return true;
+    return node::recycle::RollforwardBlock(inputs, block, pindex->nHeight,
+                                           fees + GetBlockSubsidy(pindex->nHeight, m_chainman.GetConsensus()));
 }
 
 bool Chainstate::ReplayBlocks()

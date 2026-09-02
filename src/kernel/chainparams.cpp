@@ -646,7 +646,7 @@ public:
         m_assumeutxo_data = {
             {   // For use by unit tests
                 .height = 110,
-                .hash_serialized = AssumeutxoHash{uint256{"b952555c8ab81fec46f3d4253b7af256d766ceb39fb7752b9d18cdf4a0141327"}},
+                .hash_serialized = AssumeutxoHash{uint256{"30d79bb47ab39cd7d614e9731ace9fb37a5003f9820f13b284012539764d6514"}},
                 .m_chain_tx_count = 111,
                 .blockhash = uint256{"6affe030b7965ab538f820a56ef56c8149b7dc1d1c144af57113be080db7c397"},
             },

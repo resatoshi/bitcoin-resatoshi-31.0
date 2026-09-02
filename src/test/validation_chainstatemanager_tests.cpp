@@ -234,14 +234,13 @@ struct SnapshotTestSetup : TestChain100Setup {
             BOOST_CHECK(!node::FindAssumeutxoChainstateDir(chainman.m_options.datadir));
         }
 
-        size_t initial_size;
+        size_t initial_size{100};
         size_t initial_total_coins{100};
 
         // Make some initial assertions about the contents of the chainstate.
         {
             LOCK(::cs_main);
             CCoinsViewCache& ibd_coinscache = chainman.ActiveChainstate().CoinsTip();
-            initial_size = ibd_coinscache.GetCacheSize();
             size_t total_coins{0};
 
             for (CTransactionRef& txn : m_coinbase_txns) {
@@ -251,7 +250,8 @@ struct SnapshotTestSetup : TestChain100Setup {
             }
 
             BOOST_CHECK_EQUAL(total_coins, initial_total_coins);
-            BOOST_CHECK_EQUAL(initial_size, initial_total_coins);
+            // Each connected non-genesis block also has one recycle schedule record.
+            BOOST_CHECK_EQUAL(ibd_coinscache.GetCacheSize(), 2 * initial_total_coins);
         }
 
         Chainstate& validation_chainstate = chainman.ActiveChainstate();

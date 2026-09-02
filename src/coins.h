@@ -436,7 +436,8 @@ public:
      * Add a coin. Set possible_overwrite to true if an unspent version may
      * already exist in the cache.
      */
-    void AddCoin(const COutPoint& outpoint, Coin&& coin, bool possible_overwrite);
+    void AddCoin(const COutPoint& outpoint, Coin&& coin, bool possible_overwrite,
+                 bool allow_unspendable = false);
 
     /**
      * Emplace a coin into cacheCoins without performing any checks, marking

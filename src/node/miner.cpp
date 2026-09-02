@@ -18,6 +18,7 @@
 #include <logging.h>
 #include <node/context.h>
 #include <node/kernel_notifications.h>
+#include <node/recycle.h>
 #include <policy/feerate.h>
 #include <policy/policy.h>
 #include <pow.h>
@@ -175,7 +176,8 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = m_options.coinbase_output_script;
     // Block subsidy + fees
-    const CAmount block_reward{nFees + GetBlockSubsidy(nHeight, chainparams.GetConsensus())};
+    const CAmount block_reward{nFees + GetBlockSubsidy(nHeight, chainparams.GetConsensus()) +
+                               recycle::AvailableReward(m_chainstate.CoinsTip(), *pblock, nHeight)};
     coinbaseTx.vout[0].nValue = block_reward;
     coinbase_tx.block_reward_remaining = block_reward;
 
