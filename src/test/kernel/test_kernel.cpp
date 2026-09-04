@@ -855,16 +855,16 @@ void chainman_mainnet_validation_test(TestDirectory& test_directory)
         test_directory, /*reindex=*/false, /*wipe_chainstate=*/false,
         /*block_tree_db_in_memory=*/false, /*chainstate_db_in_memory=*/false, context)};
 
-    // mainnet block 1
-    auto raw_block = hex_string_to_byte_vec("010000006fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000982051fd1e4ba744bbbe680e1fee14677ba1a3c3540bf7b1cdb606e857233e0e61bc6649ffff001d01e362990101000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000");
+    // ReSatoshi mainnet block 1
+    auto raw_block = hex_string_to_byte_vec("00000020ec740156fa8f5bbe37f8ad3b43144f68746f9c960046ddfc4532817903000000272d61b63f71bcf7e6ace35d960b80ba6978158be32b3610921d06df28bb0bcd2c0b9a6a12a1031d0c64572f0102000000010000000000000000000000000000000000000000000000000000000000000000ffffffff025100ffffffff0100f2052a010000001976a914eadbac7f36c37e39361168b7aaee3cb24a25312d88ac00000000");
     Block block{raw_block};
     BlockHeader header{block.GetHeader()};
     TransactionView tx{block.GetTransaction(block.CountTransactions() - 1)};
-    BOOST_CHECK_EQUAL(byte_span_to_hex_string_reversed(tx.Txid().ToBytes()), "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098");
-    BOOST_CHECK_EQUAL(header.Version(), 1);
-    BOOST_CHECK_EQUAL(header.Timestamp(), 1231469665);
-    BOOST_CHECK_EQUAL(header.Bits(), 0x1d00ffff);
-    BOOST_CHECK_EQUAL(header.Nonce(), 2573394689);
+    BOOST_CHECK_EQUAL(byte_span_to_hex_string_reversed(tx.Txid().ToBytes()), "cd0bbb28df061d9210362be38b157869ba800b965de3ace6f7bc713fb6612d27");
+    BOOST_CHECK_EQUAL(header.Version(), 0x20000000);
+    BOOST_CHECK_EQUAL(header.Timestamp(), 1788480300);
+    BOOST_CHECK_EQUAL(header.Bits(), 0x1d03a112);
+    BOOST_CHECK_EQUAL(header.Nonce(), 794256396);
     BOOST_CHECK_EQUAL(tx.CountInputs(), 1);
     Transaction tx2 = tx;
     BOOST_CHECK_EQUAL(tx2.CountInputs(), 1);

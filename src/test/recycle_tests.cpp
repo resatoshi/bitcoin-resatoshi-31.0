@@ -38,7 +38,7 @@ BOOST_AUTO_TEST_CASE(expiry_reward_and_disconnect)
     constexpr CAmount EXPIRED_VALUE{COIN / 2};
 
     CBlock origin{CoinbaseBlock(EXPIRED_VALUE, 1)};
-    AddCoins(view, *origin.vtx[0], /*height=*/1);
+    AddCoins(view, *origin.vtx[0], /*nHeight=*/1);
     CTxUndo early_undo;
     std::string error;
     BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, /*height=*/1, EXPIRED_VALUE, early_undo, error));
@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_CASE(unclaimed_value_stays_in_pool_and_reward_is_capped)
     constexpr CAmount BASE_REWARD{50 * COIN};
 
     CBlock origin{CoinbaseBlock(2 * COIN, 3)};
-    AddCoins(view, *origin.vtx[0], /*height=*/1);
+    AddCoins(view, *origin.vtx[0], /*nHeight=*/1);
     CTxUndo unused;
     std::string error;
     BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, /*height=*/1, 2 * COIN, unused, error));
@@ -93,7 +93,7 @@ BOOST_AUTO_TEST_CASE(reward_boundaries_and_excess_claim)
     CCoinsView base;
     CCoinsViewCache view{&base};
     CBlock origin{CoinbaseBlock(REMAINDER, 10)};
-    AddCoins(view, *origin.vtx[0], /*height=*/1);
+    AddCoins(view, *origin.vtx[0], /*nHeight=*/1);
     CTxUndo unused;
     std::string error;
     BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, /*height=*/1, REMAINDER, unused, error));
@@ -149,7 +149,7 @@ BOOST_AUTO_TEST_CASE(partial_reward_fee_separation_and_reorg)
     CCoinsView base;
     CCoinsViewCache view{&base};
     CBlock origin{CoinbaseBlock(EXPIRED, 20'000)};
-    AddCoins(view, *origin.vtx[0], /*height=*/1);
+    AddCoins(view, *origin.vtx[0], /*nHeight=*/1);
     CTxUndo unused;
     std::string error;
     BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, /*height=*/1, EXPIRED, unused, error));
@@ -184,7 +184,7 @@ BOOST_AUTO_TEST_CASE(spent_in_expiry_block_is_not_recycled)
     CCoinsViewCache view{&base};
     CBlock origin{CoinbaseBlock(VALUE, 30'000)};
     const COutPoint origin_out{origin.vtx[0]->GetHash(), 0};
-    AddCoins(view, *origin.vtx[0], /*height=*/1);
+    AddCoins(view, *origin.vtx[0], /*nHeight=*/1);
     CTxUndo unused;
     std::string error;
     BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, /*height=*/1, VALUE, unused, error));

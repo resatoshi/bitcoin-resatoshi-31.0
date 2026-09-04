@@ -159,6 +159,10 @@ void initialize()
     static auto setup{
         MakeNoLogFileContext<HeadersSyncSetup>(ChainType::MAIN,
                                                {
+                                                   // This target exercises the headers pre-sync anti-DoS
+                                                   // threshold, while a new ReSatoshi chain intentionally
+                                                   // has no default minimum chain work yet.
+                                                   .extra_args = {"-minimumchainwork=0000000000000000000000000000000000000001128750f82f4c366153a3a030"},
                                                    .setup_validation_interface = false,
                                                }),
     };
