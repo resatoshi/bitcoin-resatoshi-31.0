@@ -14,7 +14,10 @@ arith_uint256 CalculateASERT(const arith_uint256& ref_target, const int64_t targ
                             const arith_uint256& pow_limit, const int64_t half_life) noexcept
 {
     assert(ref_target > 0 && ref_target <= pow_limit);
-    assert((pow_limit >> 224) == 0);
+    // The polynomial factor is smaller than 2^17. Requiring the top 24 bits
+    // to be clear keeps the multiplication below 256 bits while permitting
+    // ReSatoshi's CPU-mineable initial target.
+    assert((pow_limit >> 232) == 0);
     assert(height_diff >= 0);
     assert(target_spacing > 0 && half_life > 0);
 

@@ -11,6 +11,9 @@
 #include <test/util/setup_common.h>
 #include <util/chaintype.h>
 
+#include <algorithm>
+#include <limits>
+
 #include <boost/test/unit_test.hpp>
 
 BOOST_FIXTURE_TEST_SUITE(pow_tests, BasicTestingSetup)
@@ -19,7 +22,8 @@ BOOST_AUTO_TEST_CASE(calculate_asert)
 {
     const auto chain_params = CreateChainParams(*m_node.args, ChainType::MAIN);
     const auto& params = chain_params->GetConsensus();
-    const arith_uint256 pow_limit = UintToArith256(params.powLimit);
+    const arith_uint256 pow_limit = UintToArith256(
+        uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"});
     const arith_uint256 initial_target = pow_limit >> 4;
     constexpr int64_t PARENT_TIME_DIFF{600};
 
@@ -44,6 +48,35 @@ BOOST_AUTO_TEST_CASE(calculate_asert)
                                     pow_limit, params.nASERTHalfLife).GetCompact(), 0x1c7fffffU);
     BOOST_CHECK_EQUAL(CalculateASERT(pow_limit, 600, PARENT_TIME_DIFF + 300, 1,
                                     pow_limit, params.nASERTHalfLife).GetCompact(), 0x1d00ffb1U);
+}
+
+BOOST_AUTO_TEST_CASE(calculate_asert_resatoshi_stress)
+{
+    const auto params = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
+    const arith_uint256 pow_limit{UintToArith256(params.powLimit)};
+    const arith_uint256 reference{arith_uint256{}.SetCompact(0x1d03a112)};
+
+    // Exercise a wide range of heights and timestamp drift. A later timestamp
+    // must never make work harder, and every result must remain representable
+    // inside the consensus target range.
+    for (int test = 0; test < 20'000; ++test) {
+        const int64_t height{static_cast<int64_t>(m_rng.randrange(10'000'000))};
+        const int64_t ideal_time{params.nPowTargetSpacing * (height + 1)};
+        const int64_t drift{static_cast<int64_t>(m_rng.randrange(200 * params.nASERTHalfLife + 1)) -
+                            100 * params.nASERTHalfLife};
+        const int64_t time{std::max<int64_t>(0, ideal_time + drift)};
+        const arith_uint256 target{CalculateASERT(reference, params.nPowTargetSpacing, time, height,
+                                                  pow_limit, params.nASERTHalfLife)};
+        const arith_uint256 later{CalculateASERT(reference, params.nPowTargetSpacing, time + 1, height,
+                                                 pow_limit, params.nASERTHalfLife)};
+        BOOST_REQUIRE(target >= 1 && target <= pow_limit);
+        BOOST_REQUIRE(later >= target && later <= pow_limit);
+    }
+
+    // Explicitly cover the largest height representable by CBlockIndex.
+    constexpr int64_t MAX_HEIGHT{std::numeric_limits<int>::max()};
+    BOOST_CHECK_EQUAL(CalculateASERT(reference, params.nPowTargetSpacing, 0, MAX_HEIGHT,
+                                    pow_limit, params.nASERTHalfLife), arith_uint256{1});
 }
 
 BOOST_AUTO_TEST_CASE(get_next_work_asert_from_genesis)
@@ -78,6 +111,7 @@ BOOST_AUTO_TEST_CASE(get_next_work)
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
     auto consensus = chainParams->GetConsensus();
     consensus.nASERTHalfLife = 0;
+    consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
     int64_t nLastRetargetTime = 1261130161; // Block #30240
     CBlockIndex pindexLast;
     pindexLast.nHeight = 32255;
@@ -99,6 +133,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_pow_limit)
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
     auto consensus = chainParams->GetConsensus();
     consensus.nASERTHalfLife = 0;
+    consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
     int64_t nLastRetargetTime = 1231006505; // Block #0
     CBlockIndex pindexLast;
     pindexLast.nHeight = 2015;
@@ -115,6 +150,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_lower_limit_actual)
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
     auto consensus = chainParams->GetConsensus();
     consensus.nASERTHalfLife = 0;
+    consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
     int64_t nLastRetargetTime = 1279008237; // Block #66528
     CBlockIndex pindexLast;
     pindexLast.nHeight = 68543;
@@ -134,6 +170,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_upper_limit_actual)
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
     auto consensus = chainParams->GetConsensus();
     consensus.nASERTHalfLife = 0;
+    consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
     int64_t nLastRetargetTime = 1263163443; // NOTE: Not an actual block time
     CBlockIndex pindexLast;
     pindexLast.nHeight = 46367;
@@ -253,6 +290,17 @@ void sanity_check_chainparams(const ArgsManager& args, ChainType chain_type)
 BOOST_AUTO_TEST_CASE(ChainParams_MAIN_sanity)
 {
     sanity_check_chainparams(*m_node.args, ChainType::MAIN);
+    const auto params = CreateChainParams(*m_node.args, ChainType::MAIN);
+    BOOST_CHECK_EQUAL(params->GenesisBlock().GetHash().ToString(),
+                      "0000000379813245fcdd4600969c6f74684f14433badf837be5b8ffa560174ec");
+    BOOST_CHECK_EQUAL(params->GenesisBlock().nBits, 0x1d03a112U);
+    BOOST_CHECK_EQUAL(params->GetDefaultPort(), 19333);
+    const MessageStartChars expected_magic{0x47, 0xd9, 0x24, 0x34};
+    BOOST_CHECK(params->MessageStart() == expected_magic);
+    BOOST_CHECK(params->DNSSeeds().empty());
+    BOOST_CHECK(params->FixedSeeds().empty());
+    BOOST_CHECK_EQUAL(params->Bech32HRP(), "rsat");
+    BOOST_CHECK(!params->AssumeutxoForHeight(840'000));
 }
 
 BOOST_AUTO_TEST_CASE(ChainParams_REGTEST_sanity)
