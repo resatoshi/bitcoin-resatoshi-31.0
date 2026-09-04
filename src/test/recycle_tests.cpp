@@ -40,6 +40,7 @@ BOOST_AUTO_TEST_CASE(expiry_reward_and_disconnect)
     CTxUndo early_undo;
     std::string error;
     BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, /*height=*/1, EXPIRED_VALUE, early_undo, error));
+    BOOST_CHECK(!view.HaveCoin(COutPoint{Txid{}, 1}));
     BOOST_CHECK(early_undo.vprevout.empty());
 
     const int expiry_height{1 + node::recycle::EXPIRY_BLOCKS};

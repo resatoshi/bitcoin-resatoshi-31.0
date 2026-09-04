@@ -746,6 +746,12 @@ void MinerTestingSetup::TestPrioritisedMining(const CScript& scriptPubKey, const
 // NOTE: These tests rely on CreateNewBlock doing its own self-validation!
 BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
 {
+    // This test uses precomputed mainnet-proof-of-work nonces for blocks with
+    // deliberately non-ideal timestamps. Keep its historical DAA fixture;
+    // ASERT calculation and integration are covered by pow_tests.
+    auto& consensus = const_cast<Consensus::Params&>(Assert(m_node.chainman)->GetParams().GetConsensus());
+    consensus.nASERTHalfLife = 0;
+
     auto mining{MakeMining()};
     BOOST_REQUIRE(mining);
 

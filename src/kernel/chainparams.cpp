@@ -96,6 +96,7 @@ public:
         consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
         consensus.nPowTargetSpacing = 10 * 60;
+        consensus.nASERTHalfLife = 2 * 24 * 60 * 60;
         consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
@@ -646,21 +647,21 @@ public:
         m_assumeutxo_data = {
             {   // For use by unit tests
                 .height = 110,
-                .hash_serialized = AssumeutxoHash{uint256{"30d79bb47ab39cd7d614e9731ace9fb37a5003f9820f13b284012539764d6514"}},
+                .hash_serialized = AssumeutxoHash{uint256{"8fdad508695a0a1d26ca108a2cdb8bfee68af1d9b3c8e7ce04251f7a3931df4f"}},
                 .m_chain_tx_count = 111,
                 .blockhash = uint256{"6affe030b7965ab538f820a56ef56c8149b7dc1d1c144af57113be080db7c397"},
             },
             {
                 // For use by fuzz target src/test/fuzz/utxo_snapshot.cpp
                 .height = 200,
-                .hash_serialized = AssumeutxoHash{uint256{"17dcc016d188d16068907cdeb38b75691a118d43053b8cd6a25969419381d13a"}},
+                .hash_serialized = AssumeutxoHash{uint256{"5c9780fb382e7ef99f20e797178c1af2ab0d26e88a06f5ce5f863a835f428f61"}},
                 .m_chain_tx_count = 201,
                 .blockhash = uint256{"385901ccbd69dff6bbd00065d01fb8a9e464dede7cfe0372443884f9b1dcf6b9"},
             },
             {
                 // For use by test/functional/feature_assumeutxo.py and test/functional/tool_bitcoin_chainstate.py
                 .height = 299,
-                .hash_serialized = AssumeutxoHash{uint256{"d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2"}},
+                .hash_serialized = AssumeutxoHash{uint256{"96c14c0a61e68efdd6cfa9db0f9f4c554875c3bdcff6ec773d8681cf6fae1b27"}},
                 .m_chain_tx_count = 334,
                 .blockhash = uint256{"7cc695046fec709f8c9394b6f928f81e81fd3ac20977bb68760fa1faa7916ea2"},
             },

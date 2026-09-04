@@ -2,16 +2,13 @@
 # Copyright (c) 2025-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test mining on an alternate mainnet
+"""Test ASERT difficulty adjustment on an alternate mainnet.
 
-Test mining related RPCs that involve difficulty adjustment, which
-regtest doesn't have.
+The first precomputed difficulty-1 block follows genesis. Its 126-second solve
+time makes ASERT increase difficulty for block 2. Verify the new target and
+that a block retaining the legacy target is rejected.
 
 It uses an alternate mainnet chain. See data/README.md for how it was generated.
-
-Mine one retarget period worth of blocks with a short interval in
-order to maximally raise the difficulty. Verify this using the getmininginfo RPC.
-
 """
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -21,8 +18,6 @@ from test_framework.util import (
 from test_framework.blocktools import (
     DIFF_1_N_BITS,
     DIFF_1_TARGET,
-    DIFF_4_N_BITS,
-    DIFF_4_TARGET,
     create_coinbase,
     nbits_str,
     target_str
@@ -53,7 +48,7 @@ class MiningMainnetTest(BitcoinTestFramework):
             help='Block data file (default: %(default)s)',
         )
 
-    def mine(self, height, prev_hash, blocks, node):
+    def mine(self, height, prev_hash, blocks, node, expected_result=None):
         self.log.debug(f"height={height}")
         block = CBlock()
         block.nVersion = 0x20000000
@@ -68,7 +63,9 @@ class MiningMainnetTest(BitcoinTestFramework):
         block.hashMerkleRoot = block.calc_merkle_root()
         block_hex = block.serialize(with_witness=False).hex()
         self.log.debug(block_hex)
-        assert_equal(node.submitblock(block_hex), None)
+        assert_equal(node.submitblock(block_hex), expected_result)
+        if expected_result is not None:
+            return prev_hash
         prev_hash = node.getbestblockhash()
         assert_equal(prev_hash, block.hash_hex)
         return prev_hash
@@ -88,37 +85,21 @@ class MiningMainnetTest(BitcoinTestFramework):
             n_blocks = len(blocks['timestamps'])
             assert_equal(n_blocks, 2016)
 
-        # Mine up to the last block of the first retarget period
-        for i in range(2015):
-            prev_hash = self.mine(i + 1, prev_hash, blocks, node)
+        prev_hash = self.mine(1, prev_hash, blocks, node)
+        assert_equal(node.getblockcount(), 1)
 
-        assert_equal(node.getblockcount(), 2015)
-
-        self.log.info("Check difficulty adjustment with getmininginfo")
+        self.log.info("Check ASERT adjustment with getmininginfo")
         mining_info = node.getmininginfo()
         assert_equal(mining_info['difficulty'], 1)
         assert_equal(mining_info['bits'], nbits_str(DIFF_1_N_BITS))
         assert_equal(mining_info['target'], target_str(DIFF_1_TARGET))
 
-        assert_equal(mining_info['next']['height'], 2016)
-        assert_equal(mining_info['next']['difficulty'], 4)
-        assert_equal(mining_info['next']['bits'], nbits_str(DIFF_4_N_BITS))
-        assert_equal(mining_info['next']['target'], target_str(DIFF_4_TARGET))
+        assert_equal(mining_info['next']['height'], 2)
+        assert_equal(mining_info['next']['bits'], nbits_str(0x1d00ff83))
 
-        # Mine first block of the second retarget period
-        height = 2016
-        prev_hash = self.mine(height, prev_hash, blocks, node)
-        assert_equal(node.getblockcount(), height)
-
-        mining_info = node.getmininginfo()
-        assert_equal(mining_info['difficulty'], 4)
-
-        self.log.info("getblock RPC should show historical target")
-        block_info = node.getblock(node.getblockhash(1))
-
-        assert_equal(block_info['difficulty'], 1)
-        assert_equal(block_info['bits'], nbits_str(DIFF_1_N_BITS))
-        assert_equal(block_info['target'], target_str(DIFF_1_TARGET))
+        self.log.info("Reject a second block that retains the legacy target")
+        self.mine(2, prev_hash, blocks, node, expected_result='bad-diffbits')
+        assert_equal(node.getblockcount(), 1)
 
 
 if __name__ == '__main__':

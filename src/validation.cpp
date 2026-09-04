@@ -2618,7 +2618,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         std::string recycle_error;
         if (!node::recycle::ConnectBlock(view, block, pindex->nHeight, blockReward,
                                          recycle_undo, recycle_error, expired)) {
-            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-recycle-state", recycle_error);
+            const bool excessive_coinbase{recycle_error.starts_with("coinbase claims")};
+            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                          excessive_coinbase ? "bad-cb-amount" : "bad-recycle-state",
+                          recycle_error);
         } else if (!recycle_undo.vprevout.empty()) {
             blockundo.vtxundo.push_back(std::move(recycle_undo));
         }

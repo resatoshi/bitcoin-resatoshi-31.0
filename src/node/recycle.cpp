@@ -33,7 +33,8 @@ COutPoint PoolOutpoint()
 
 COutPoint ScheduleOutpoint(int height)
 {
-    return COutPoint{ReservedTxid(), static_cast<uint32_t>(height)};
+    static constexpr uint32_t SCHEDULE_OFFSET{1'000'000};
+    return COutPoint{ReservedTxid(), SCHEDULE_OFFSET + static_cast<uint32_t>(height)};
 }
 
 struct UndoData {

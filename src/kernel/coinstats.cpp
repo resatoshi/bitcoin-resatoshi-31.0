@@ -70,8 +70,6 @@ void RemoveCoinHash(MuHash3072& muhash, const COutPoint& outpoint, const Coin& c
     muhash.Remove(MakeUCharSpan(ss));
 }
 
-static void ApplyCoinHash(std::nullptr_t, const COutPoint& outpoint, const Coin& coin) {}
-
 //! Warning: be very careful when changing this! assumeutxo and UTXO snapshot
 //! validation commitments are reliant on the hash constructed by this
 //! function.
@@ -84,8 +82,7 @@ static void ApplyCoinHash(std::nullptr_t, const COutPoint& outpoint, const Coin&
 //! It is also possible, though very unlikely, that a change in this
 //! construction could cause a previously invalid (and potentially malicious)
 //! UTXO snapshot to be considered valid.
-template <typename T>
-static void ApplyHash(T& hash_obj, const Txid& hash, const std::map<uint32_t, Coin>& outputs)
+static void ApplyHash(HashWriter& hash_obj, const Txid& hash, const std::map<uint32_t, Coin>& outputs)
 {
     for (auto it = outputs.begin(); it != outputs.end(); ++it) {
         COutPoint outpoint = COutPoint(hash, it->first);
@@ -94,11 +91,27 @@ static void ApplyHash(T& hash_obj, const Txid& hash, const std::map<uint32_t, Co
     }
 }
 
+static void ApplyHash(MuHash3072& hash_obj, const Txid& hash, const std::map<uint32_t, Coin>& outputs)
+{
+    for (const auto& [index, coin] : outputs) {
+        if (!coin.out.scriptPubKey.IsUnspendable()) {
+            ApplyCoinHash(hash_obj, COutPoint{hash, index}, coin);
+        }
+    }
+}
+
+static void ApplyHash(std::nullptr_t, const Txid&, const std::map<uint32_t, Coin>&) {}
+
 static void ApplyStats(CCoinsStats& stats, const std::map<uint32_t, Coin>& outputs)
 {
     assert(!outputs.empty());
-    stats.nTransactions++;
+    bool counted_transaction{false};
     for (auto it = outputs.begin(); it != outputs.end(); ++it) {
+        if (it->second.out.scriptPubKey.IsUnspendable()) continue;
+        if (!counted_transaction) {
+            stats.nTransactions++;
+            counted_transaction = true;
+        }
         stats.nTransactionOutputs++;
         if (stats.total_amount.has_value()) {
             stats.total_amount = CheckedAdd(*stats.total_amount, it->second.out.nValue);
