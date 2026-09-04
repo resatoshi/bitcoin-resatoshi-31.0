@@ -162,6 +162,12 @@ BOOST_AUTO_TEST_CASE(partial_reward_fee_separation_and_reorg)
                                                expiry_undo, error));
     BOOST_CHECK_EQUAL(node::recycle::PoolBalance(view), EXPIRED - PARTIAL_REWARD);
 
+    // Crash recovery may replay a transition whose UTXO and recycle changes
+    // were already written. Reapplying it must be idempotent.
+    BOOST_REQUIRE(node::recycle::RollforwardBlock(view, expiry, expiry_height,
+                                                   SUBSIDY + FEES, &expiry_undo));
+    BOOST_CHECK_EQUAL(node::recycle::PoolBalance(view), EXPIRED - PARTIAL_REWARD);
+
     // Reorg the partially rewarded expiry block out and replace it with a block
     // that claims no recycle reward. The expiry must be applied exactly once.
     BOOST_REQUIRE(node::recycle::DisconnectBlock(view, expiry_height, &expiry_undo));

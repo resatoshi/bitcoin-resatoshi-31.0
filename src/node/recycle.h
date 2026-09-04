@@ -35,7 +35,8 @@ bool ConnectBlock(CCoinsViewCache& view, const CBlock& block, int height, CAmoun
 bool DisconnectBlock(CCoinsViewCache& view, int height, CTxUndo* undo);
 
 /** Reapply the state transition while recovering an interrupted chainstate flush. */
-bool RollforwardBlock(CCoinsViewCache& view, const CBlock& block, int height, CAmount base_reward);
+bool RollforwardBlock(CCoinsViewCache& view, const CBlock& block, int height, CAmount base_reward,
+                      const CTxUndo* undo);
 
 } // namespace node::recycle
 

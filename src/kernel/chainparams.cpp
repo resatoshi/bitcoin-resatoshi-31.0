@@ -82,6 +82,7 @@ public:
         consensus.signet_blocks = false;
         consensus.signet_challenge.clear();
         consensus.nSubsidyHalvingInterval = 210000;
+        consensus.recycle_enabled = true;
         // ReSatoshi starts with the current consensus rules active and has no
         // Bitcoin-history-specific script exceptions.
         consensus.BIP34Height = 1;
@@ -622,7 +623,7 @@ public:
         m_assumeutxo_data = {
             {   // For use by unit tests
                 .height = 110,
-                .hash_serialized = AssumeutxoHash{uint256{"8fdad508695a0a1d26ca108a2cdb8bfee68af1d9b3c8e7ce04251f7a3931df4f"}},
+                .hash_serialized = AssumeutxoHash{uint256{"b952555c8ab81fec46f3d4253b7af256d766ceb39fb7752b9d18cdf4a0141327"}},
                 .m_chain_tx_count = 111,
                 .blockhash = uint256{"6affe030b7965ab538f820a56ef56c8149b7dc1d1c144af57113be080db7c397"},
             },

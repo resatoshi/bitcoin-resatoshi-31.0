@@ -2185,7 +2185,8 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
         return DISCONNECT_FAILED;
     }
 
-    const size_t recycle_undos{pindex->nHeight - node::recycle::EXPIRY_BLOCKS >= 1 ? 1U : 0U};
+    const bool recycle_enabled{m_chainman.GetConsensus().recycle_enabled};
+    const size_t recycle_undos{recycle_enabled && pindex->nHeight - node::recycle::EXPIRY_BLOCKS >= 1 ? 1U : 0U};
     if (blockUndo.vtxundo.size() + 1 != block.vtx.size() + recycle_undos) {
         LogError("DisconnectBlock(): block and undo data inconsistent\n");
         return DISCONNECT_FAILED;
@@ -2241,7 +2242,7 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
     }
 
     CTxUndo* recycle_undo{recycle_undos ? &blockUndo.vtxundo.back() : nullptr};
-    if (!node::recycle::DisconnectBlock(view, pindex->nHeight, recycle_undo)) {
+    if (recycle_enabled && !node::recycle::DisconnectBlock(view, pindex->nHeight, recycle_undo)) {
         LogError("DisconnectBlock(): invalid recycle undo data\n");
         return DISCONNECT_FAILED;
     }
@@ -2613,7 +2614,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
              Ticks<MillisecondsDouble>(m_chainman.time_connect) / m_chainman.num_blocks_total);
 
     const CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, params.GetConsensus());
-    if (state.IsValid()) {
+    if (state.IsValid() && params.GetConsensus().recycle_enabled) {
         CTxUndo recycle_undo;
         std::string recycle_error;
         if (!node::recycle::ConnectBlock(view, block, pindex->nHeight, blockReward,
@@ -4814,12 +4815,23 @@ bool Chainstate::RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& in
         return false;
     }
 
+    CBlockUndo block_undo;
+    if (m_chainman.GetConsensus().recycle_enabled && !m_blockman.ReadBlockUndo(block_undo, *pindex)) {
+        LogError("ReplayBlock(): ReadBlockUndo failed at %d, hash=%s\n", pindex->nHeight, pindex->GetBlockHash().ToString());
+        return false;
+    }
+
     CAmount fees{0};
-    for (const CTransactionRef& tx : block.vtx) {
+    for (size_t i{0}; i < block.vtx.size(); ++i) {
+        const CTransactionRef& tx{block.vtx[i]};
         if (!tx->IsCoinBase()) {
             CAmount value_in{0};
-            for (const CTxIn &txin : tx->vin) {
-                value_in += inputs.AccessCoin(txin.prevout).out.nValue;
+            if (m_chainman.GetConsensus().recycle_enabled) {
+                if (i - 1 >= block_undo.vtxundo.size() || block_undo.vtxundo[i - 1].vprevout.size() != tx->vin.size()) return false;
+                for (const Coin& coin : block_undo.vtxundo[i - 1].vprevout) value_in += coin.out.nValue;
+            }
+            for (const CTxIn& txin : tx->vin) {
+                if (!m_chainman.GetConsensus().recycle_enabled) value_in += inputs.AccessCoin(txin.prevout).out.nValue;
                 inputs.SpendCoin(txin.prevout);
             }
             fees += value_in - tx->GetValueOut();
@@ -4827,8 +4839,14 @@ bool Chainstate::RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& in
         // Pass check = true as every addition may be an overwrite.
         AddCoins(inputs, *tx, pindex->nHeight, true);
     }
+    if (!m_chainman.GetConsensus().recycle_enabled) return true;
+    const bool has_recycle_undo{pindex->nHeight - node::recycle::EXPIRY_BLOCKS >= 1};
+    const CTxUndo* recycle_undo{has_recycle_undo && block_undo.vtxundo.size() >= block.vtx.size()
+                                    ? &block_undo.vtxundo.back()
+                                    : nullptr};
     return node::recycle::RollforwardBlock(inputs, block, pindex->nHeight,
-                                           fees + GetBlockSubsidy(pindex->nHeight, m_chainman.GetConsensus()));
+                                           fees + GetBlockSubsidy(pindex->nHeight, m_chainman.GetConsensus()),
+                                           recycle_undo);
 }
 
 bool Chainstate::ReplayBlocks()
