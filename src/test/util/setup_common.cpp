@@ -279,7 +279,7 @@ ChainTestingSetup::ChainTestingSetup(const ChainType chainType, TestOpts opts)
             // Use no worker threads while fuzzing to avoid non-determinism
             .worker_threads_num = EnableFuzzDeterminism() ? 0 : 2,
         };
-        if (const auto value{m_args.GetArg("-minimumchainwork")}) {
+        if (const auto value{m_node.args->GetArg("-minimumchainwork")}) {
             chainman_opts.minimum_chain_work = UintToArith256(*Assert(uint256::FromUserHex(*value)));
         }
         if (opts.min_validation_cache) {

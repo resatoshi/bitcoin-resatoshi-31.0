@@ -52,8 +52,8 @@ class AssumeutxoTest(BitcoinTestFramework):
         wrpc = node.get_wallet_rpc(wallet_name)
         return wrpc.importdescriptors(import_request)
 
-    def validate_snapshot_import(self, node, loaded, base_hash, coins_written):
-        assert_equal(loaded['coins_loaded'], coins_written)
+    def validate_snapshot_import(self, node, loaded, base_hash):
+        assert_equal(loaded['coins_loaded'], SNAPSHOT_BASE_HEIGHT)
         assert_equal(loaded['base_height'], SNAPSHOT_BASE_HEIGHT)
 
         normal, snapshot = node.getchainstates()["chainstates"]
@@ -80,7 +80,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.log.info("Backup from the snapshot height can be loaded during background sync (pruned node)")
         loaded = n3.loadtxoutset(dump_output['path'])
         assert_greater_than(n3.pruneblockchain(START_HEIGHT), 0)
-        self.validate_snapshot_import(n3, loaded, dump_output['base_hash'], dump_output['coins_written'])
+        self.validate_snapshot_import(n3, loaded, dump_output['base_hash'])
         n3.restorewallet("w", "backup_w.dat")
         # Balance of w wallet is still 0 because n3 has not synced yet
         assert_equal(n3.getbalance(), 0)
@@ -172,7 +172,7 @@ class AssumeutxoTest(BitcoinTestFramework):
 
         assert_equal(
             dump_output['txoutset_hash'],
-            "96c14c0a61e68efdd6cfa9db0f9f4c554875c3bdcff6ec773d8681cf6fae1b27")
+            "d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2")
         assert_equal(dump_output["nchaintx"], 334)
         assert_equal(n0.getblockchaininfo()["blocks"], SNAPSHOT_BASE_HEIGHT)
 
@@ -195,7 +195,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.log.info(
             f"Loading snapshot into second node from {dump_output['path']}")
         loaded = n1.loadtxoutset(dump_output['path'])
-        self.validate_snapshot_import(n1, loaded, dump_output['base_hash'], dump_output['coins_written'])
+        self.validate_snapshot_import(n1, loaded, dump_output['base_hash'])
 
         self.log.info("Backup from the snapshot height can be loaded during background sync")
         n1.restorewallet("w", "backup_w.dat")
