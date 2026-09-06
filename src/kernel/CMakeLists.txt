@@ -33,6 +33,7 @@ add_library(bitcoinkernel
   ../logging.cpp
   ../node/blockstorage.cpp
   ../node/chainstate.cpp
+  ../node/recycle.cpp
   ../node/utxo_snapshot.cpp
   ../policy/ephemeral_policy.cpp
   ../policy/feerate.cpp
@@ -42,6 +43,7 @@ add_library(bitcoinkernel
   ../policy/settings.cpp
   ../policy/truc_policy.cpp
   ../pow.cpp
+  ../pow/asert.cpp
   ../primitives/block.cpp
   ../primitives/transaction.cpp
   ../pubkey.cpp

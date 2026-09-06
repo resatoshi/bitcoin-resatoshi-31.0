@@ -33,7 +33,8 @@ COutPoint PoolOutpoint()
 
 COutPoint ScheduleOutpoint(int height)
 {
-    return COutPoint{ReservedTxid(), static_cast<uint32_t>(height)};
+    static constexpr uint32_t SCHEDULE_OFFSET{1'000'000};
+    return COutPoint{ReservedTxid(), SCHEDULE_OFFSET + static_cast<uint32_t>(height)};
 }
 
 struct UndoData {
@@ -208,10 +209,31 @@ bool DisconnectBlock(CCoinsViewCache& view, int height, CTxUndo* undo)
     return true;
 }
 
-bool RollforwardBlock(CCoinsViewCache& view, const CBlock& block, int height, CAmount base_reward)
+bool RollforwardBlock(CCoinsViewCache& view, const CBlock& block, int height, CAmount base_reward,
+                      const CTxUndo* undo)
 {
-    std::string error;
-    return Apply(view, block, height, base_reward, nullptr, error);
+    const int origin{height - EXPIRY_BLOCKS};
+    if (origin < 1) {
+        std::string error;
+        return Apply(view, block, height, base_reward, nullptr, error);
+    }
+    if (!undo || undo->vprevout.size() != 1) return false;
+
+    UndoData data;
+    if (!Decode(undo->vprevout[0].out.scriptPubKey, data)) return false;
+    CAmount expired_value{0};
+    for (const auto& [outpoint, coin] : data.expired) expired_value += coin.out.nValue;
+
+    const CAmount available{data.pool_before + expired_value};
+    const CAmount claimed{std::max<CAmount>(0, block.vtx[0]->GetValueOut() - base_reward)};
+    if (claimed > std::min(MAX_REWARD, available)) return false;
+
+    view.SpendCoin(ScheduleOutpoint(origin));
+    for (const auto& [outpoint, coin] : data.expired) view.SpendCoin(outpoint);
+    PutStateCoin(view, PoolOutpoint(), StateCoin(available - claimed, CScript{OP_RETURN}, height));
+    PutStateCoin(view, ScheduleOutpoint(height),
+                 StateCoin(0, Encode(CurrentOutputs(view, block, height)), height));
+    return true;
 }
 
 } // namespace node::recycle

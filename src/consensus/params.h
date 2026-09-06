@@ -119,6 +119,10 @@ struct Params {
     bool fPowNoRetargeting;
     int64_t nPowTargetSpacing;
     int64_t nPowTargetTimespan;
+    /** ASERT half-life in seconds. Zero keeps the legacy periodic retarget. */
+    int64_t nASERTHalfLife{0};
+    /** Enable ReSatoshi UTXO expiry and recycle-pool accounting. */
+    bool recycle_enabled{false};
     std::chrono::seconds PowTargetSpacing() const
     {
         return std::chrono::seconds{nPowTargetSpacing};

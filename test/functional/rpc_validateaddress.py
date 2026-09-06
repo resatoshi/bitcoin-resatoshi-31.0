@@ -6,6 +6,7 @@
 
 from test_framework.test_framework import BitcoinTestFramework
 
+from test_framework.segwit_addr import CHARSET, Encoding, bech32_decode, bech32_encode
 from test_framework.util import assert_equal
 
 INVALID_DATA = [
@@ -195,10 +196,33 @@ class ValidateAddressMainTest(BitcoinTestFramework):
         assert_equal(res["error_locations"], error_locations)
 
     def test_validateaddress(self):
+        def resatoshi_address(addr):
+            separator = addr.lower().rfind("1")
+            if separator < 0 or addr[:separator].lower() != "bc":
+                return addr
+            encoding, _, data = bech32_decode(addr)
+            if encoding is None:
+                # Keep deliberately malformed data/checksums malformed while
+                # replacing the recognized mainnet HRP.
+                return ("RSAT" if addr[:separator].isupper() else "rsat") + addr[separator:]
+            encoded = bech32_encode(encoding, "rsat", data)
+            return encoded.upper() if addr.isupper() else encoded
+
         for (addr, error, locs) in INVALID_DATA:
+            if addr.lower().startswith("bc1"):
+                locs = [location + 2 for location in locs]
+                if error == "Invalid Bech32 checksum":
+                    separator = addr.lower().rfind("1")
+                    data = [CHARSET.find(char) for char in addr.lower()[separator + 1:]]
+                    addr = bech32_encode(Encoding.BECH32, "rsat", data[:-6])
+                    addr = addr[:-1] + ("q" if addr[-1] != "q" else "p")
+                else:
+                    addr = resatoshi_address(addr)
+            else:
+                addr = resatoshi_address(addr)
             self.check_invalid(addr, error, locs)
         for (addr, spk) in VALID_DATA:
-            self.check_valid(addr, spk)
+            self.check_valid(resatoshi_address(addr), spk)
 
     def run_test(self):
         self.test_validateaddress()

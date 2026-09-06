@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <pow.h>
+#include <pow/asert.h>
 
 #include <arith_uint256.h>
 #include <chain.h>
@@ -15,6 +16,24 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHead
 {
     assert(pindexLast != nullptr);
     unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
+
+    if (params.fPowNoRetargeting) return pindexLast->nBits;
+
+    if (params.nASERTHalfLife > 0) {
+        const CBlockIndex* anchor = pindexLast->GetAncestor(0);
+        assert(anchor != nullptr);
+
+        // The virtual parent of the genesis anchor is one target interval
+        // before genesis. This makes block 1 retain the genesis target and
+        // establishes an ideal schedule from genesis onward.
+        const int64_t anchor_parent_time = anchor->GetBlockTime() - params.nPowTargetSpacing;
+        return CalculateASERT(arith_uint256{}.SetCompact(anchor->nBits),
+                              params.nPowTargetSpacing,
+                              pindexLast->GetBlockTime() - anchor_parent_time,
+                              pindexLast->nHeight - anchor->nHeight,
+                              UintToArith256(params.powLimit),
+                              params.nASERTHalfLife).GetCompact();
+    }
 
     // Only change once per difficulty adjustment interval
     if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
@@ -89,6 +108,10 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 bool PermittedDifficultyTransition(const Consensus::Params& params, int64_t height, uint32_t old_nbits, uint32_t new_nbits)
 {
     if (params.fPowAllowMinDifficultyBlocks) return true;
+
+    // Header pre-synchronization lacks the timestamps and anchor needed to
+    // recompute ASERT. ContextualCheckBlockHeader performs the exact check.
+    if (params.nASERTHalfLife > 0) return DeriveTarget(new_nbits, params.powLimit).has_value();
 
     if (height % params.DifficultyAdjustmentInterval() == 0) {
         int64_t smallest_timespan = params.nPowTargetTimespan/4;

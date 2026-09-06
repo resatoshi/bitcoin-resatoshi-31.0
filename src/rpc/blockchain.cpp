@@ -2198,24 +2198,28 @@ bool FindScriptPubKey(std::atomic<int>& scan_progress, const std::atomic<bool>& 
 {
     scan_progress = 0;
     count = 0;
+    int64_t scanned{0};
     while (cursor->Valid()) {
         COutPoint key;
         Coin coin;
         if (!cursor->GetKey(key) || !cursor->GetValue(coin)) return false;
-        if (++count % 8192 == 0) {
+        if (++scanned % 8192 == 0) {
             interruption_point();
             if (should_abort) {
                 // allow to abort the scan via the abort reference
                 return false;
             }
         }
-        if (count % 256 == 0) {
+        if (scanned % 256 == 0) {
             // update progress reference every 256 item
             uint32_t high = 0x100 * *UCharCast(key.hash.begin()) + *(UCharCast(key.hash.begin()) + 1);
             scan_progress = (int)(high * 100.0 / 65536.0 + 0.5);
         }
-        if (needles.contains(coin.out.scriptPubKey)) {
-            out_results.emplace(key, coin);
+        if (!coin.out.scriptPubKey.IsUnspendable()) {
+            ++count;
+            if (needles.contains(coin.out.scriptPubKey)) {
+                out_results.emplace(key, coin);
+            }
         }
         cursor->Next();
     }

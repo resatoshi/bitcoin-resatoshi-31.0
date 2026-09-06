@@ -746,6 +746,19 @@ void MinerTestingSetup::TestPrioritisedMining(const CScript& scriptPubKey, const
 // NOTE: These tests rely on CreateNewBlock doing its own self-validation!
 BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
 {
+    // This test builds a long synthetic chain with deliberately non-ideal
+    // timestamps. Use an easy, test-local legacy target; ASERT calculation and
+    // production-target integration are covered by pow_tests and the functional
+    // mining_mainnet test.
+    auto& consensus = const_cast<Consensus::Params&>(Assert(m_node.chainman)->GetParams().GetConsensus());
+    consensus.nASERTHalfLife = 0;
+    consensus.powLimit = uint256{"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+    consensus.CSVHeight = 419328;
+    {
+        LOCK(cs_main);
+        Assert(m_node.chainman)->ActiveChain().Tip()->nBits = 0x207fffff;
+    }
+
     auto mining{MakeMining()};
     BOOST_REQUIRE(mining);
 
@@ -819,7 +832,8 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
             block.nTime = Assert(m_node.chainman)->ActiveChain().Tip()->GetMedianTimePast()+1;
             txCoinbase.version = 1;
             txCoinbase.vin[0].scriptSig = CScript{} << (current_height + 1) << bi.extranonce;
-            txCoinbase.vout.resize(1); // Ignore the (optional) segwit commitment added by CreateNewBlock (as the hardcoded nonces don't account for this)
+            txCoinbase.vout.resize(1); // Exercise the original no-witness coinbase shape.
+            txCoinbase.vin[0].scriptWitness.SetNull();
             txCoinbase.vout[0].scriptPubKey = CScript();
             block.vtx[0] = MakeTransactionRef(txCoinbase);
             if (txFirst.size() == 0)
@@ -828,6 +842,9 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
                 txFirst.push_back(block.vtx[0]);
             block.hashMerkleRoot = BlockMerkleRoot(block);
             block.nNonce = bi.nonce;
+            while (!CheckProofOfWork(block.GetHash(), block.nBits, consensus)) {
+                ++block.nNonce;
+            }
         }
         std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(block);
         // Alternate calls between Chainman's ProcessNewBlock and submitSolution

@@ -18,8 +18,8 @@ from test_framework.script import OP_0, OP_1, OP_2, OP_3, OP_16, OP_DUP, OP_EQUA
 from test_framework.segwit_addr import bech32_encode, decode_segwit_address, convertbits, CHARSET, Encoding  # noqa: E402
 
 # key types
-PUBKEY_ADDRESS = 0
-SCRIPT_ADDRESS = 5
+PUBKEY_ADDRESS = 60
+SCRIPT_ADDRESS = 122
 PUBKEY_ADDRESS_TEST = 111
 SCRIPT_ADDRESS_TEST = 196
 PUBKEY_ADDRESS_REGTEST = 111
@@ -62,10 +62,10 @@ templates = [
 # templates for valid bech32 sequences
 bech32_templates = [
   # hrp, version, witprog_size, metadata, encoding, output_prefix
-  ('bc',    0, 20, (False, 'main',    None, True), Encoding.BECH32,  p2wpkh_prefix),
-  ('bc',    0, 32, (False, 'main',    None, True), Encoding.BECH32,  p2wsh_prefix),
-  ('bc',    1, 32, (False, 'main',    None, True), Encoding.BECH32M, p2tr_prefix),
-  ('bc',    2,  2, (False, 'main',    None, True), Encoding.BECH32M, (OP_2, 2)),
+  ('rsat',  0, 20, (False, 'main',    None, True), Encoding.BECH32,  p2wpkh_prefix),
+  ('rsat',  0, 32, (False, 'main',    None, True), Encoding.BECH32,  p2wsh_prefix),
+  ('rsat',  1, 32, (False, 'main',    None, True), Encoding.BECH32M, p2tr_prefix),
+  ('rsat',  2,  2, (False, 'main',    None, True), Encoding.BECH32M, (OP_2, 2)),
   ('tb',    0, 20, (False, 'test',    None, True), Encoding.BECH32,  p2wpkh_prefix),
   ('tb',    0, 32, (False, 'test',    None, True), Encoding.BECH32,  p2wsh_prefix),
   ('tb',    1, 32, (False, 'test',    None, True), Encoding.BECH32M, p2tr_prefix),
@@ -119,7 +119,7 @@ def is_valid(v):
 
 def is_valid_bech32(v):
     '''Check vector v for bech32 validity'''
-    for hrp in ['bc', 'tb', 'bcrt']:
+    for hrp in ['rsat', 'tb', 'bcrt']:
         if decode_segwit_address(hrp, v) != (None, None):
             return True
     return False
@@ -262,4 +262,3 @@ if __name__ == '__main__':
     data = list(islice(uiter(), count))
     json.dump(data, sys.stdout, sort_keys=True, indent=4)
     sys.stdout.write('\n')
-

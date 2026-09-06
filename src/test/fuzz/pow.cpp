@@ -99,9 +99,7 @@ FUZZ_TARGET(pow_transition, .init = initialize_pow)
     uint32_t nbits{fuzzed_data_provider.ConsumeIntegral<uint32_t>()};
 
     const arith_uint256 pow_limit = UintToArith256(consensus_params.powLimit);
-    arith_uint256 old_target;
-    old_target.SetCompact(nbits);
-    if (old_target > pow_limit) {
+    if (!DeriveTarget(nbits, consensus_params.powLimit)) {
         nbits = pow_limit.GetCompact();
     }
     // Create one difficulty adjustment period worth of headers

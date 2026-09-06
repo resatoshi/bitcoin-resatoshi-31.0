@@ -176,8 +176,10 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = m_options.coinbase_output_script;
     // Block subsidy + fees
-    const CAmount block_reward{nFees + GetBlockSubsidy(nHeight, chainparams.GetConsensus()) +
-                               recycle::AvailableReward(m_chainstate.CoinsTip(), *pblock, nHeight)};
+    const CAmount recycle_reward{chainparams.GetConsensus().recycle_enabled
+                                     ? recycle::AvailableReward(m_chainstate.CoinsTip(), *pblock, nHeight)
+                                     : 0};
+    const CAmount block_reward{nFees + GetBlockSubsidy(nHeight, chainparams.GetConsensus()) + recycle_reward};
     coinbaseTx.vout[0].nValue = block_reward;
     coinbase_tx.block_reward_remaining = block_reward;
 
