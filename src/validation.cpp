@@ -2614,17 +2614,22 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
              Ticks<MillisecondsDouble>(m_chainman.time_connect) / m_chainman.num_blocks_total);
 
     const CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, params.GetConsensus());
-    if (state.IsValid() && params.GetConsensus().recycle_enabled) {
-        CTxUndo recycle_undo;
-        std::string recycle_error;
-        if (!node::recycle::ConnectBlock(view, block, pindex->nHeight, blockReward,
-                                         recycle_undo, recycle_error, expired)) {
-            const bool excessive_coinbase{recycle_error.starts_with("coinbase claims")};
-            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                          excessive_coinbase ? "bad-cb-amount" : "bad-recycle-state",
-                          recycle_error);
-        } else if (!recycle_undo.vprevout.empty()) {
-            blockundo.vtxundo.push_back(std::move(recycle_undo));
+    if (state.IsValid()) {
+        if (params.GetConsensus().recycle_enabled) {
+            CTxUndo recycle_undo;
+            std::string recycle_error;
+            if (!node::recycle::ConnectBlock(view, block, pindex->nHeight, blockReward,
+                                             recycle_undo, recycle_error, expired)) {
+                const bool excessive_coinbase{recycle_error.starts_with("coinbase claims")};
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                              excessive_coinbase ? "bad-cb-amount" : "bad-recycle-state",
+                              recycle_error);
+            } else if (!recycle_undo.vprevout.empty()) {
+                blockundo.vtxundo.push_back(std::move(recycle_undo));
+            }
+        } else if (block.vtx[0]->GetValueOut() > blockReward) {
+            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-cb-amount",
+                          strprintf("coinbase pays too much (actual=%d vs limit=%d)", block.vtx[0]->GetValueOut(), blockReward));
         }
     }
     if (control) {
