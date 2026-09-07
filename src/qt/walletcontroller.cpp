@@ -11,6 +11,7 @@
 #include <qt/guiutil.h>
 #include <qt/walletmodel.h>
 
+#include <chainparams.h>
 #include <external_signer.h>
 #include <interfaces/handler.h>
 #include <interfaces/node.h>
@@ -384,11 +385,40 @@ void LoadWalletsActivity::load(bool show_loading_minimized)
         /*show_minimized=*/show_loading_minimized);
 
     QTimer::singleShot(0, worker(), [this] {
-        for (auto& wallet : node().walletLoader().getWallets()) {
+        auto wallets = node().walletLoader().getWallets();
+        for (auto& wallet : wallets) {
             m_wallet_controller->getOrCreateWallet(std::move(wallet));
         }
 
-        QTimer::singleShot(0, this, [this] { Q_EMIT finished(); });
+        // First-run convenience for the one-touch miner. Never replace or
+        // modify an existing wallet: create the local descriptor wallet only
+        // when the wallet directory is genuinely empty.
+        if (Params().GetChainType() == ChainType::MAIN && wallets.empty() && node().walletLoader().listWalletDir().empty()) {
+            SecureString passphrase;
+            auto wallet = node().walletLoader().createWallet(
+                "resatoshi-miner", passphrase, WALLET_FLAG_DESCRIPTORS, m_warning_message);
+            if (wallet) {
+                m_wallet_controller->getOrCreateWallet(std::move(*wallet));
+            } else {
+                m_error_message = util::ErrorString(wallet);
+            }
+        }
+
+        QTimer::singleShot(0, this, [this] {
+            if (!m_error_message.empty()) {
+                QMessageBox::critical(m_parent_widget, tr("Create wallet failed"),
+                                      QString::fromStdString(m_error_message.translated));
+            } else if (!m_warning_message.empty()) {
+                // Do not block startup or clean shutdown on informational
+                // first-run warnings. The parent owns this non-modal dialog.
+                auto* warning = new QMessageBox(QMessageBox::Warning, tr("Wallet warning"),
+                    QString::fromStdString(Join(m_warning_message, Untranslated("\n")).translated),
+                    QMessageBox::Ok, m_parent_widget);
+                warning->setAttribute(Qt::WA_DeleteOnClose);
+                warning->show();
+            }
+            Q_EMIT finished();
+        });
     });
 }
 

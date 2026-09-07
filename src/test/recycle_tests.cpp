@@ -214,6 +214,25 @@ BOOST_AUTO_TEST_CASE(spent_in_expiry_block_is_not_recycled)
     BOOST_REQUIRE(node::recycle::ConnectBlock(view, expiry, expiry_height, BASE_REWARD,
                                                recycle_undo, error));
     BOOST_CHECK_EQUAL(node::recycle::PoolBalance(view), 0);
+
+    // The replacement output is a normal new UTXO. Its lifetime starts at
+    // this confirmation height, not at the spent output's origin height.
+    const COutPoint renewed_out{expiry.vtx[1]->GetHash(), 0};
+    BOOST_REQUIRE(view.HaveCoin(renewed_out));
+    CBlock before_renewed_expiry{CoinbaseBlock(BASE_REWARD, 30'002)};
+    const int before_height{expiry_height + node::recycle::EXPIRY_BLOCKS - 1};
+    BOOST_CHECK_EQUAL(node::recycle::AvailableReward(view, before_renewed_expiry, before_height), 0);
+
+    CBlock renewed_expiry{CoinbaseBlock(BASE_REWARD, 30'003)};
+    const int renewed_expiry_height{expiry_height + node::recycle::EXPIRY_BLOCKS};
+    AddCoins(view, *renewed_expiry.vtx[0], renewed_expiry_height);
+    CTxUndo renewed_undo;
+    std::vector<COutPoint> renewed_expired;
+    BOOST_REQUIRE(node::recycle::ConnectBlock(view, renewed_expiry, renewed_expiry_height,
+                                               BASE_REWARD, renewed_undo, error, &renewed_expired));
+    BOOST_CHECK(std::find(renewed_expired.begin(), renewed_expired.end(), renewed_out) != renewed_expired.end());
+    BOOST_CHECK(!view.HaveCoin(renewed_out));
+    BOOST_CHECK_GE(node::recycle::PoolBalance(view), VALUE);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

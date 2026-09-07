@@ -29,6 +29,7 @@
 #include <wallet/spend.h>
 #include <wallet/wallet.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -115,18 +116,30 @@ WalletTxOut MakeWalletTxOut(const CWallet& wallet,
     WalletTxOut result;
     result.txout = wtx.tx->vout[n];
     result.time = wtx.GetTxTime();
+    result.block_height = wtx.state<TxStateConfirmed>() ? wtx.state<TxStateConfirmed>()->confirmed_block_height : -1;
+    result.blocks_to_maturity = wallet.GetTxBlocksToMaturity(wtx);
     result.depth_in_main_chain = depth;
+    result.is_coinbase = wtx.IsCoinBase();
+    result.is_spendable = wallet.IsMine(result.txout);
+    result.is_safe = depth > 0;
     result.is_spent = wallet.IsSpent(COutPoint(wtx.GetHash(), n));
     return result;
 }
 
 WalletTxOut MakeWalletTxOut(const CWallet& wallet,
+    const CWalletTx& wtx,
     const COutput& output) EXCLUSIVE_LOCKS_REQUIRED(wallet.cs_wallet)
 {
     WalletTxOut result;
     result.txout = output.txout;
     result.time = output.time;
+    result.block_height = wtx.state<TxStateConfirmed>() ? wtx.state<TxStateConfirmed>()->confirmed_block_height : -1;
+    result.blocks_to_maturity = wallet.GetTxBlocksToMaturity(wtx);
+    result.input_bytes = output.input_bytes;
     result.depth_in_main_chain = output.depth;
+    result.is_coinbase = wtx.IsCoinBase();
+    result.is_spendable = wallet.IsMine(result.txout);
+    result.is_safe = output.safe;
     result.is_spent = wallet.IsSpent(output.outpoint);
     return result;
 }
@@ -441,8 +454,10 @@ public:
         for (const auto& entry : ListCoins(*m_wallet)) {
             auto& group = result[entry.first];
             for (const auto& coin : entry.second) {
+                const auto wallet_tx = m_wallet->mapWallet.find(coin.outpoint.hash);
+                if (wallet_tx == m_wallet->mapWallet.end()) continue;
                 group.emplace_back(coin.outpoint,
-                    MakeWalletTxOut(*m_wallet, coin));
+                    MakeWalletTxOut(*m_wallet, wallet_tx->second, coin));
             }
         }
         return result;
@@ -476,6 +491,13 @@ public:
         if (returned_target) *returned_target = fee_calc.returnedTarget;
         if (reason) *reason = fee_calc.reason;
         return result;
+    }
+    CAmount getInitialFallbackFee(unsigned int tx_bytes) override
+    {
+        CFeeRate rate{1000}; // 1 sat/vB
+        rate = std::max(rate, m_wallet->chain().mempoolMinFee());
+        rate = std::max(rate, GetRequiredFeeRate(*m_wallet));
+        return rate.GetFee(tx_bytes);
     }
     unsigned int getConfirmTarget() override { return m_wallet->m_confirm_target; }
     bool hdEnabled() override { return m_wallet->IsHDEnabled(); }

@@ -169,6 +169,8 @@ if(ENABLE_WALLET)
       coincontroldialog.h
       coincontroltreewidget.cpp
       coincontroltreewidget.h
+      cpuminer.cpp
+      cpuminer.h
       createwalletdialog.cpp
       createwalletdialog.h
       editaddressdialog.cpp
@@ -177,6 +179,10 @@ if(ENABLE_WALLET)
       openuridialog.h
       overviewpage.cpp
       overviewpage.h
+  minerdashboard.cpp
+  minerdashboard.h
+  renewutxos.cpp
+  renewutxos.h
       paymentserver.cpp
       paymentserver.h
       psbtoperationsdialog.cpp

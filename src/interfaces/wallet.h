@@ -250,6 +250,9 @@ public:
         int* returned_target,
         FeeReason* reason) = 0;
 
+    //! Get the initial fallback fee (1 sat/vB or the higher mempool/required minimum).
+    virtual CAmount getInitialFallbackFee(unsigned int tx_bytes) = 0;
+
     //! Get tx confirm target.
     virtual unsigned int getConfirmTarget() = 0;
 
@@ -415,7 +418,13 @@ struct WalletTxOut
 {
     CTxOut txout;
     int64_t time;
+    int block_height = -1;
+    int blocks_to_maturity = 0;
+    int input_bytes = -1;
     int depth_in_main_chain = -1;
+    bool is_coinbase = false;
+    bool is_spendable = false;
+    bool is_safe = false;
     bool is_spent = false;
 };
 

@@ -387,6 +387,7 @@ jobs:
             ${{ env.BASE_BUILD_DIR }}/src/secp256k1/bin/*.exe
             ${{ env.BASE_BUILD_DIR }}/src/univalue/*.exe
             ${{ env.BASE_BUILD_DIR }}/test/config.ini
+            ${{ env.BASE_BUILD_DIR }}/bitcoin-win64-setup.exe
 
   windows-native-test:
     name: 'Windows, ${{ matrix.crt }}, test cross-built'

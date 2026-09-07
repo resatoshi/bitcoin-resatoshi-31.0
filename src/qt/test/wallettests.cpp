@@ -12,6 +12,7 @@
 #include <qt/bitcoinamountfield.h>
 #include <qt/bitcoinunits.h>
 #include <qt/clientmodel.h>
+#include <qt/minerdashboard.h>
 #include <qt/optionsmodel.h>
 #include <qt/overviewpage.h>
 #include <qt/platformstyle.h>
@@ -41,6 +42,7 @@
 #include <QObject>
 #include <QPushButton>
 #include <QTimer>
+#include <QTableWidget>
 #include <QVBoxLayout>
 #include <QTextEdit>
 #include <QListView>
@@ -271,6 +273,26 @@ void TestGUI(interfaces::Node& node, const std::shared_ptr<CWallet>& wallet)
     WalletModel& walletModel = *mini_gui.walletModel;
     SendCoinsDialog& sendCoinsDialog = mini_gui.sendCoinsDialog;
     TransactionView& transactionView = mini_gui.transactionView;
+    QVERIFY(walletModel.wallet().getInitialFallbackFee(1000) >= 1000);
+
+    // Renewal first creates a non-broadcasting preview on the single-screen
+    // dashboard. It must not require an unlock at this stage.
+    MinerDashboard dashboard(&walletModel, platformStyle.get());
+    dashboard.setClientModel(mini_gui.clientModel.get());
+    qApp->processEvents();
+    auto* renew_table = dashboard.findChild<QTableWidget*>("renewUtxosTable");
+    auto* select_all = dashboard.findChild<QPushButton*>("selectAllRenewable");
+    auto* preview = dashboard.findChild<QPushButton*>("renewUtxosButton");
+    QVERIFY(renew_table);
+    QVERIFY(select_all);
+    QVERIFY(preview);
+    QVERIFY(renew_table->rowCount() > 0);
+    select_all->click();
+    QVERIFY(preview->isEnabled());
+    preview->click();
+    QVERIFY(dashboard.findChild<QLabel*>("renewDestination")->text().contains("New address"));
+    QVERIFY(dashboard.findChild<QLabel*>("renewSummary")->text().contains("fallback", Qt::CaseInsensitive));
+    QVERIFY(dashboard.findChild<QLabel*>("renewStatus")->text().contains("Review", Qt::CaseInsensitive));
 
     // Update walletModel cached balance which will trigger an update for the 'labelBalance' QLabel.
     walletModel.pollBalanceChanged();
@@ -329,7 +351,7 @@ void TestGUI(interfaces::Node& node, const std::shared_ptr<CWallet>& wallet)
             QCOMPARE(receiveRequestDialog->QObject::findChild<QLabel*>("payment_header")->text(), QString("Payment information"));
             QCOMPARE(receiveRequestDialog->QObject::findChild<QLabel*>("uri_tag")->text(), QString("URI:"));
             QString uri = receiveRequestDialog->QObject::findChild<QLabel*>("uri_content")->text();
-            QCOMPARE(uri.count("bitcoin:"), 2);
+            QCOMPARE(uri.count("resatoshi:"), 2);
             QCOMPARE(receiveRequestDialog->QObject::findChild<QLabel*>("address_tag")->text(), QString("Address:"));
             QVERIFY(address.isEmpty());
             address = receiveRequestDialog->QObject::findChild<QLabel*>("address_content")->text();

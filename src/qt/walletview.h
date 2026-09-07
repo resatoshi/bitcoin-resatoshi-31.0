@@ -11,7 +11,7 @@
 #include <QStackedWidget>
 
 class ClientModel;
-class OverviewPage;
+class MinerDashboard;
 class PlatformStyle;
 class ReceiveCoinsDialog;
 class SendCoinsDialog;
@@ -58,7 +58,7 @@ private:
     //!
     WalletModel* const walletModel;
 
-    OverviewPage *overviewPage;
+    MinerDashboard *overviewPage;
     QWidget *transactionsPage;
     ReceiveCoinsDialog *receiveCoinsPage;
     SendCoinsDialog *sendCoinsPage;
@@ -122,6 +122,8 @@ Q_SIGNALS:
     void incomingTransaction(const QString& date, BitcoinUnit unit, const CAmount& amount, const QString& type, const QString& address, const QString& label, const QString& walletName);
     /** Notify that the out of sync warning icon has been pressed */
     void outOfSyncWarningClicked();
+    /** Request the standard, local wallet backup restore flow. */
+    void restoreWalletRequested();
 };
 
 #endif // BITCOIN_QT_WALLETVIEW_H

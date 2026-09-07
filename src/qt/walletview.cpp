@@ -9,7 +9,7 @@
 #include <qt/clientmodel.h>
 #include <qt/guiutil.h>
 #include <qt/optionsmodel.h>
-#include <qt/overviewpage.h>
+#include <qt/minerdashboard.h>
 #include <qt/platformstyle.h>
 #include <qt/receivecoinsdialog.h>
 #include <qt/sendcoinsdialog.h>
@@ -37,8 +37,7 @@ WalletView::WalletView(WalletModel* wallet_model, const PlatformStyle* _platform
     assert(walletModel);
 
     // Create tabs
-    overviewPage = new OverviewPage(platformStyle);
-    overviewPage->setWalletModel(walletModel);
+    overviewPage = new MinerDashboard(walletModel, platformStyle);
 
     transactionsPage = new QWidget(this);
     QVBoxLayout *vbox = new QVBoxLayout();
@@ -74,11 +73,15 @@ WalletView::WalletView(WalletModel* wallet_model, const PlatformStyle* _platform
     addWidget(receiveCoinsPage);
     addWidget(sendCoinsPage);
 
-    connect(overviewPage, &OverviewPage::transactionClicked, this, &WalletView::transactionClicked);
+    connect(overviewPage, &MinerDashboard::transactionClicked, this, &WalletView::transactionClicked);
     // Clicking on a transaction on the overview pre-selects the transaction on the transaction history page
-    connect(overviewPage, &OverviewPage::transactionClicked, transactionView, qOverload<const QModelIndex&>(&TransactionView::focusTransaction));
+    connect(overviewPage, &MinerDashboard::transactionClicked, transactionView, qOverload<const QModelIndex&>(&TransactionView::focusTransaction));
 
-    connect(overviewPage, &OverviewPage::outOfSyncWarningClicked, this, &WalletView::outOfSyncWarningClicked);
+    connect(overviewPage, &MinerDashboard::outOfSyncWarningClicked, this, &WalletView::outOfSyncWarningClicked);
+    connect(overviewPage, &MinerDashboard::coinsSent, this, &WalletView::coinsSent);
+    connect(overviewPage, &MinerDashboard::encryptRequested, this, &WalletView::encryptWallet);
+    connect(overviewPage, &MinerDashboard::backupRequested, this, &WalletView::backupWallet);
+    connect(overviewPage, &MinerDashboard::restoreRequested, this, &WalletView::restoreWalletRequested);
 
     connect(sendCoinsPage, &SendCoinsDialog::coinsSent, this, &WalletView::coinsSent);
     // Highlight transaction after send
@@ -92,7 +95,7 @@ WalletView::WalletView(WalletModel* wallet_model, const PlatformStyle* _platform
     // Pass through messages from transactionView
     connect(transactionView, &TransactionView::message, this, &WalletView::message);
 
-    connect(this, &WalletView::setPrivacy, overviewPage, &OverviewPage::setPrivacy);
+    connect(this, &WalletView::setPrivacy, overviewPage, &MinerDashboard::setPrivacy);
     connect(this, &WalletView::setPrivacy, this, &WalletView::disableTransactionView);
 
     // Receive and pass through messages from wallet model

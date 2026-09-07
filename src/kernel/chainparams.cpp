@@ -146,8 +146,12 @@ public:
         // This is fine at runtime as we'll fall back to using them as an addrfetch if they don't support the
         // service bits we want, but we should get them updated to support all service bits wanted by any
         // release ASAP to avoid it where possible.
-        // Bootstrap nodes can be added once ReSatoshi-operated seeds exist.
+        // ReSatoshi-operated bootstrap names. Addrman and peer address relay
+        // take over after initial discovery; DNS seeds are retried when the
+        // node does not have enough usable addresses.
         vSeeds.clear();
+        vSeeds.emplace_back("resatoshi-seed.freeddns.org.");
+        vSeeds.emplace_back("resatoshi-seed.duckdns.org.");
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1, 60);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1, 122);
