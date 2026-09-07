@@ -226,7 +226,7 @@ void RenewUtxos::selectionChanged()
     m_summary->setText(selected.empty() ? tr("Select one or more eligible UTXOs.") :
         tr("Selected: %1 UTXO(s) · Renewed: %2 · Estimated fee: %3%4 · Final: %5")
             .arg(selected.size()).arg(formatAmount(total)).arg(formatAmount(fee))
-            .arg(fallback ? tr(" (initial fallback)") : QString{})
+            .arg(fallback ? " " + tr("(initial fallback)") : QString{})
             .arg(formatAmount(std::max<CAmount>(0, total - fee))));
     m_renew->setEnabled(!selected.empty() && total > fee);
 }
@@ -267,7 +267,7 @@ void RenewUtxos::renew()
             tr("New addresses: %1 fresh addresses (one per transaction)\n%2").arg(tx_count).arg(destination_list.join("\n")));
         m_summary->setText(tr("Preview · Renewed: %1 · Estimated fee: %2%3 · Final: %4 · %5 transaction(s)")
             .arg(formatAmount(total)).arg(formatAmount(estimate))
-            .arg(fallback ? tr(" (1 sat/vB initial fallback or higher node minimum)") : QString{})
+            .arg(fallback ? " " + tr("(1 sat/vB initial fallback or higher node minimum)") : QString{})
             .arg(formatAmount(total - estimate)).arg(tx_count));
         m_status->setText(tr("Review the estimate and destination. Continue to unlock the wallet and see the exact fee before broadcast."));
         m_preview_ready = true;
