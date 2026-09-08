@@ -161,21 +161,31 @@ static bool GenerateBlock(ChainstateManager& chainman, CBlock&& block, uint64_t&
     return true;
 }
 
-static UniValue generateBlocks(ChainstateManager& chainman, Mining& miner, const CScript& coinbase_output_script, int nGenerate, uint64_t nMaxTries)
+static UniValue generateBlocks(ChainstateManager& chainman, Mining& miner,
+                               const CScript& coinbase_output_script, int nGenerate,
+                               uint64_t nMaxTries, uint32_t start_nonce = 0)
 {
     UniValue blockHashes(UniValue::VARR);
     while (nGenerate > 0 && !chainman.m_interrupt) {
         std::unique_ptr<BlockTemplate> block_template(miner.createNewBlock({ .coinbase_output_script = coinbase_output_script, .include_dummy_extranonce = true }, /*cooldown=*/false));
         CHECK_NONFATAL(block_template);
+        CBlock block{block_template->getBlock()};
+        block.nNonce = start_nonce;
 
         std::shared_ptr<const CBlock> block_out;
-        if (!GenerateBlock(chainman, block_template->getBlock(), nMaxTries, block_out, /*process_new_block=*/true)) {
+        if (!GenerateBlock(chainman, std::move(block), nMaxTries, block_out, /*process_new_block=*/true)) {
             break;
         }
 
         if (block_out) {
             --nGenerate;
             blockHashes.push_back(block_out->GetHash().GetHex());
+            start_nonce = 0;
+        } else {
+            // The caller's nonce range reached UINT32_MAX without finding a
+            // block. A fresh template with the same start nonce would repeat
+            // identical work.
+            break;
         }
     }
     return blockHashes;
@@ -269,6 +279,8 @@ static RPCHelpMan generatetoaddress()
              {"nblocks", RPCArg::Type::NUM, RPCArg::Optional::NO, "How many blocks are generated."},
              {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address to send the newly generated bitcoin to."},
              {"maxtries", RPCArg::Type::NUM, RPCArg::Default{DEFAULT_MAX_TRIES}, "How many iterations to try."},
+             {"startnonce", RPCArg::Type::NUM, RPCArg::Default{0},
+              "Nonce at which to begin searching. Intended for non-overlapping CPU-mining batches."},
          },
          RPCResult{
              RPCResult::Type::ARR, "", "hashes of blocks generated",
@@ -285,6 +297,10 @@ static RPCHelpMan generatetoaddress()
 {
     const int num_blocks{request.params[0].getInt<int>()};
     const uint64_t max_tries{request.params[2].isNull() ? DEFAULT_MAX_TRIES : request.params[2].getInt<int>()};
+    const uint64_t start_nonce_arg{request.params[3].isNull() ? 0 : request.params[3].getInt<uint64_t>()};
+    if (start_nonce_arg > std::numeric_limits<uint32_t>::max()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "startnonce must be between 0 and 4294967295");
+    }
 
     CTxDestination destination = DecodeDestination(request.params[1].get_str());
     if (!IsValidDestination(destination)) {
@@ -297,7 +313,8 @@ static RPCHelpMan generatetoaddress()
 
     CScript coinbase_output_script = GetScriptForDestination(destination);
 
-    return generateBlocks(chainman, miner, coinbase_output_script, num_blocks, max_tries);
+    return generateBlocks(chainman, miner, coinbase_output_script, num_blocks, max_tries,
+                          static_cast<uint32_t>(start_nonce_arg));
 },
     };
 }

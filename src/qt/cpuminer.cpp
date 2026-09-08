@@ -8,10 +8,11 @@
 #include <univalue.h>
 
 #include <exception>
+#include <limits>
 
 namespace {
 // Keep stop latency short while amortizing block-template construction.
-constexpr uint64_t HASH_BATCH{100'000};
+constexpr uint32_t HASH_BATCH{1'000'000};
 }
 
 CpuMiner::CpuMiner(interfaces::Node& node) : m_node(node) {}
@@ -59,17 +60,24 @@ std::string CpuMiner::error() const
 
 void CpuMiner::worker(std::string destination)
 {
+    uint32_t next_nonce{0};
     try {
         while (m_running.load()) {
             UniValue params{UniValue::VARR};
             params.push_back(1);
             params.push_back(destination);
             params.push_back(HASH_BATCH);
+            params.push_back(next_nonce);
             const UniValue result{m_node.executeRpc("generatetoaddress", params, "")};
             // An empty result means the entire nonce batch was tested. For a
             // solved batch the exact winning nonce is not exposed, so omit it
             // rather than overstating the displayed hashrate.
-            if (result.isArray() && result.empty()) m_hashes += HASH_BATCH;
+            if (result.isArray() && result.empty()) {
+                m_hashes += HASH_BATCH;
+                next_nonce = next_nonce <= std::numeric_limits<uint32_t>::max() - 2 * HASH_BATCH
+                    ? next_nonce + HASH_BATCH
+                    : 0;
+            }
         }
     } catch (const std::exception& e) {
         std::lock_guard lock{m_error_mutex};

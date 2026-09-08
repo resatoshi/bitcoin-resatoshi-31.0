@@ -24,8 +24,23 @@ class RPCGenerateTest(BitcoinTestFramework):
         self.test_generateblock()
 
     def test_generatetoaddress(self):
-        self.generatetoaddress(self.nodes[0], 1, 'mneYUmWYsuk7kySiURxCi3AGxrAqZxLgPZ')
+        node = self.nodes[0]
+        address = 'mneYUmWYsuk7kySiURxCi3AGxrAqZxLgPZ'
+        self.generatetoaddress(node, 1, address)
         assert_raises_rpc_error(-5, "Invalid address", self.generatetoaddress, self.nodes[0], 1, '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy')
+
+        self.log.info('Start mining at the requested nonce')
+        start_nonce = 2_000_000
+        block_hash = node._rpc.generatetoaddress(1, address, 1_000_000, start_nonce)[0]
+        nonce = node.getblockheader(block_hash)['nonce']
+        assert start_nonce <= nonce < start_nonce + 1_000_000
+
+        self.log.info('Stop cleanly when the nonce space is exhausted')
+        exhausted = node._rpc.generatetoaddress(1, address, 1, 4_294_967_295)
+        assert len(exhausted) <= 1
+
+        assert_raises_rpc_error(-8, "startnonce must be between 0 and 4294967295",
+                                node._rpc.generatetoaddress, 1, address, 1, 4_294_967_296)
 
     def test_generateblock(self):
         node = self.nodes[0]
