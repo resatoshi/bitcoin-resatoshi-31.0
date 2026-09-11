@@ -2186,7 +2186,7 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
     }
 
     const bool recycle_enabled{m_chainman.GetConsensus().recycle_enabled};
-    const size_t recycle_undos{recycle_enabled && pindex->nHeight - node::recycle::EXPIRY_BLOCKS >= 1 ? 1U : 0U};
+    const size_t recycle_undos{recycle_enabled && pindex->nHeight - m_chainman.GetConsensus().recycle_expiry_blocks >= 1 ? 1U : 0U};
     if (blockUndo.vtxundo.size() + 1 != block.vtx.size() + recycle_undos) {
         LogError("DisconnectBlock(): block and undo data inconsistent\n");
         return DISCONNECT_FAILED;
@@ -2242,7 +2242,7 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
     }
 
     CTxUndo* recycle_undo{recycle_undos ? &blockUndo.vtxundo.back() : nullptr};
-    if (recycle_enabled && !node::recycle::DisconnectBlock(view, pindex->nHeight, recycle_undo)) {
+    if (recycle_enabled && !node::recycle::DisconnectBlock(view, pindex->nHeight, recycle_undo, m_chainman.GetConsensus().recycle_expiry_blocks)) {
         LogError("DisconnectBlock(): invalid recycle undo data\n");
         return DISCONNECT_FAILED;
     }
@@ -2619,11 +2619,15 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             CTxUndo recycle_undo;
             std::string recycle_error;
             if (!node::recycle::ConnectBlock(view, block, pindex->nHeight, blockReward,
-                                             recycle_undo, recycle_error, expired)) {
+                                             recycle_undo, recycle_error, expired, params.GetConsensus().recycle_expiry_blocks)) {
                 const bool excessive_coinbase{recycle_error.starts_with("coinbase claims")};
-                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                              excessive_coinbase ? "bad-cb-amount" : "bad-recycle-state",
-                              recycle_error);
+                if (excessive_coinbase) {
+                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-cb-amount", recycle_error);
+                } else {
+                    // Local state damage must not permanently mark a valid
+                    // network block invalid.
+                    state.Error(recycle_error);
+                }
             } else if (!recycle_undo.vprevout.empty()) {
                 blockundo.vtxundo.push_back(std::move(recycle_undo));
             }
@@ -4622,6 +4626,25 @@ bool Chainstate::LoadChainTip()
         return false;
     }
     m_chain.SetTip(*pindex);
+    if (m_chainman.GetConsensus().recycle_enabled && !CoinsDB().RecycleStateReady()) {
+        const int first{std::max(1, pindex->nHeight - m_chainman.GetConsensus().recycle_expiry_blocks + 1)};
+        for (int height{first}; height <= pindex->nHeight; ++height) {
+            if (m_chainman.m_interrupt) return false;
+            CCoinsViewCache audit{&CoinsDB()};
+            if (node::recycle::ScheduleValid(audit, height)) continue;
+            CBlock source;
+            if (!m_blockman.ReadBlock(source, *m_chain[height])) {
+                LogError("Cannot repair recycle schedule at height %d: original block is unavailable; rebuild chainstate from complete blocks", height);
+                return false;
+            }
+            node::recycle::RestoreSchedule(CoinsTip(), source, height);
+            LogInfo("Repaired recycle schedule at height %d from original block", height);
+            // Keep repair memory bounded on existing long chains.
+            if (CoinsTip().DynamicMemoryUsage() > 16 * 1024 * 1024) CoinsTip().Flush();
+        }
+        CoinsTip().Flush();
+        CoinsDB().MarkRecycleStateReady();
+    }
     m_chainman.UpdateIBDStatus();
     tip = m_chain.Tip();
 
@@ -4845,13 +4868,13 @@ bool Chainstate::RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& in
         AddCoins(inputs, *tx, pindex->nHeight, true);
     }
     if (!m_chainman.GetConsensus().recycle_enabled) return true;
-    const bool has_recycle_undo{pindex->nHeight - node::recycle::EXPIRY_BLOCKS >= 1};
+    const bool has_recycle_undo{pindex->nHeight - m_chainman.GetConsensus().recycle_expiry_blocks >= 1};
     const CTxUndo* recycle_undo{has_recycle_undo && block_undo.vtxundo.size() >= block.vtx.size()
                                     ? &block_undo.vtxundo.back()
                                     : nullptr};
     return node::recycle::RollforwardBlock(inputs, block, pindex->nHeight,
                                            fees + GetBlockSubsidy(pindex->nHeight, m_chainman.GetConsensus()),
-                                           recycle_undo);
+                                           recycle_undo, m_chainman.GetConsensus().recycle_expiry_blocks);
 }
 
 bool Chainstate::ReplayBlocks()

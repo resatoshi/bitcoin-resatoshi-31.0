@@ -6,6 +6,7 @@
 #define BITCOIN_QT_MINERDASHBOARD_H
 
 #include <QWidget>
+#include <QElapsedTimer>
 
 #include <memory>
 #include <string>
@@ -68,7 +69,7 @@ private:
     std::unique_ptr<CpuMiner> m_miner;
     std::vector<std::string> m_mining_addresses;
     uint64_t m_last_hashes{0};
-    int m_no_peer_seconds{0};
+    QElapsedTimer m_hash_clock;
 };
 
 #endif // BITCOIN_QT_MINERDASHBOARD_H

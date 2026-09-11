@@ -4,6 +4,9 @@
 
 #include <coins.h>
 #include <node/recycle.h>
+#include <node/recycle_serialization.h>
+#include <test/util/setup_common.h>
+#include <txdb.h>
 #include <primitives/block.h>
 #include <script/script.h>
 #include <undo.h>
@@ -195,6 +198,13 @@ BOOST_AUTO_TEST_CASE(spent_in_expiry_block_is_not_recycled)
     std::string error;
     BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, /*height=*/1, VALUE, unused, error));
 
+    // This sparse fixture jumps over intermediate blocks. Materialize the
+    // schedule consumed immediately before the renewed output expires too.
+    CBlock preceding{CoinbaseBlock(0, 30'004)};
+    AddCoins(view, *preceding.vtx[0], node::recycle::EXPIRY_BLOCKS);
+    BOOST_REQUIRE(node::recycle::ConnectBlock(view, preceding, node::recycle::EXPIRY_BLOCKS,
+                                               BASE_REWARD, unused, error));
+
     CMutableTransaction spend;
     spend.vin.emplace_back(origin_out);
     spend.vout.emplace_back(VALUE, CScript{} << OP_TRUE);
@@ -233,6 +243,125 @@ BOOST_AUTO_TEST_CASE(spent_in_expiry_block_is_not_recycled)
     BOOST_CHECK(std::find(renewed_expired.begin(), renewed_expired.end(), renewed_out) != renewed_expired.end());
     BOOST_CHECK(!view.HaveCoin(renewed_out));
     BOOST_CHECK_GE(node::recycle::PoolBalance(view), VALUE);
+}
+
+
+BOOST_FIXTURE_TEST_CASE(large_state_disk_and_undo_roundtrip, BasicTestingSetup)
+{
+    for (int count : {200, 277, 278, 1000}) {
+        const auto path{m_path_root / fs::PathFromString(strprintf("coins-%d", count))};
+        CBlock origin{CoinbaseBlock(count, count)};
+        CMutableTransaction tx{*origin.vtx[0]};
+        tx.vout.assign(count, CTxOut{1, CScript{} << OP_TRUE});
+        origin.vtx[0] = MakeTransactionRef(std::move(tx));
+        const COutPoint schedule_key{Txid{}, 1'000'001};
+        {
+            CCoinsViewDB db{{.path = path, .cache_bytes = 1 << 20}, {}};
+            CCoinsViewCache view{&db};
+            AddCoins(view, *origin.vtx[0], 1);
+            CTxUndo unused;
+            std::string error;
+            BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, 1, count, unused, error));
+            view.SetBestBlock(uint256{1});
+            view.Flush();
+        }
+        {
+            CCoinsViewDB db{{.path = path, .cache_bytes = 1 << 20}, {}};
+            CCoinsViewCache view{&db};
+            BOOST_REQUIRE(node::recycle::ScheduleValid(view, 1));
+            const auto original_schedule{view.AccessCoin(schedule_key).out.scriptPubKey};
+            if (count >= 278) BOOST_REQUIRE(original_schedule.size() > MAX_SCRIPT_SIZE);
+            auto cursor{db.Cursor()};
+            bool saw_schedule{false};
+            while (cursor->Valid()) {
+                COutPoint key;
+                Coin coin;
+                BOOST_REQUIRE(cursor->GetKey(key));
+                BOOST_REQUIRE(cursor->GetValue(coin));
+                if (key == schedule_key) {
+                    saw_schedule = true;
+                    BOOST_CHECK(coin.out.scriptPubKey == original_schedule);
+                }
+                cursor->Next();
+            }
+            BOOST_REQUIRE(saw_schedule);
+            const int height{1 + node::recycle::EXPIRY_BLOCKS};
+            CBlock expiry{CoinbaseBlock(50 * COIN + count, count + 1)};
+            BOOST_REQUIRE_EQUAL(node::recycle::AvailableReward(view, expiry, height), count);
+            AddCoins(view, *expiry.vtx[0], height);
+            CBlockUndo block_undo;
+            block_undo.vtxundo.emplace_back();
+            std::string error;
+            BOOST_REQUIRE(node::recycle::ConnectBlock(view, expiry, height, 50 * COIN, block_undo.vtxundo.back(), error));
+            DataStream bytes;
+            bytes << block_undo;
+            CBlockUndo restored;
+            bytes >> restored;
+            BOOST_REQUIRE(restored.vtxundo.back().vprevout[0].out.scriptPubKey.size() > MAX_SCRIPT_SIZE);
+            BOOST_REQUIRE(node::recycle::RollforwardBlock(view, expiry, height, 50 * COIN, &restored.vtxundo.back()));
+            BOOST_REQUIRE(node::recycle::DisconnectBlock(view, height, &restored.vtxundo.back()));
+            BOOST_CHECK(view.AccessCoin(schedule_key).out.scriptPubKey == original_schedule);
+            BOOST_CHECK(!view.HaveCoin(COutPoint{Txid{}, std::numeric_limits<uint32_t>::max()}));
+            for (int n{0}; n < count; ++n) BOOST_CHECK(view.HaveCoin(COutPoint{origin.vtx[0]->GetHash(), static_cast<uint32_t>(n)}));
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(repair_truncated_schedule_from_block)
+{
+    CCoinsView base;
+    CCoinsViewCache view{&base};
+    CBlock origin{CoinbaseBlock(COIN, 100)};
+    CMutableTransaction tx{*origin.vtx[0]};
+    tx.vout.assign(300, CTxOut{1, CScript{} << OP_TRUE});
+    origin.vtx[0] = MakeTransactionRef(std::move(tx));
+    AddCoins(view, *origin.vtx[0], 1);
+    CTxUndo undo;
+    std::string error;
+    BOOST_REQUIRE(node::recycle::ConnectBlock(view, origin, 1, COIN, undo, error));
+    const COutPoint key{Txid{}, 1'000'001};
+    const auto expected{view.AccessCoin(key).out.scriptPubKey};
+    Coin damaged{view.AccessCoin(key)};
+    damaged.out.scriptPubKey = CScript{OP_RETURN};
+    view.SpendCoin(key);
+    view.AddCoin(key, std::move(damaged), false, true);
+    BOOST_REQUIRE(!node::recycle::ScheduleValid(view, 1));
+    node::recycle::RestoreSchedule(view, origin, 1);
+    BOOST_CHECK(view.AccessCoin(key).out.scriptPubKey == expected);
+}
+
+BOOST_AUTO_TEST_CASE(metadata_reader_bounds_and_truncation)
+{
+    CScript decoded;
+    DataStream oversized;
+    const uint32_t size{static_cast<uint32_t>(MAX_SIZE) + 1 + ScriptCompression::nSpecialScripts};
+    oversized << VARINT(size);
+    BOOST_CHECK_THROW((oversized >> Using<node::recycle::MetadataScriptCompression>(decoded)), std::ios_base::failure);
+
+    // The long-script exception applies only to internal OP_RETURN records.
+    CScript non_metadata;
+    non_metadata.resize(MAX_SCRIPT_SIZE + 1);
+    non_metadata.front() = OP_TRUE;
+    DataStream non_metadata_stream;
+    non_metadata_stream << Using<ScriptCompression>(non_metadata);
+    BOOST_CHECK_THROW((non_metadata_stream >> Using<node::recycle::MetadataScriptCompression>(decoded)), std::ios_base::failure);
+
+    DataStream truncated;
+    const uint32_t missing_payload{100 + ScriptCompression::nSpecialScripts};
+    truncated << VARINT(missing_payload);
+    BOOST_CHECK_THROW((truncated >> Using<node::recycle::MetadataScriptCompression>(decoded)), std::ios_base::failure);
+}
+
+BOOST_AUTO_TEST_CASE(missing_schedule_is_not_zero_reward)
+{
+    CCoinsView base;
+    CCoinsViewCache view{&base};
+    const CBlock block{CoinbaseBlock(COIN, 101)};
+    BOOST_CHECK_THROW(node::recycle::AvailableReward(view, block, node::recycle::EXPIRY_BLOCKS + 1), std::runtime_error);
+    CTxUndo undo;
+    std::string error;
+    BOOST_CHECK(!node::recycle::ConnectBlock(view, block, node::recycle::EXPIRY_BLOCKS + 1, COIN, undo, error));
+    BOOST_CHECK_EQUAL(error, "missing or corrupt recycle expiry record");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

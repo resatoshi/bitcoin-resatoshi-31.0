@@ -404,6 +404,20 @@ CNode* CConnman::ConnectNode(CAddress addrConnect,
     std::vector<CAddress> connect_to{};
     if (pszDest) {
         std::vector<CService> resolved{Lookup(pszDest, default_port, fNameLookup && !HaveNameProxy(), 256)};
+        // Reuse the connection thread's resolution for GUI bootstrap identity.
+        // Only base seed names qualify, not service-filtered DNS peer lists.
+        std::string host;
+        uint16_t port{default_port};
+        SplitHostPort(pszDest, port, host);
+        if (host.ends_with('.')) host.pop_back();
+        for (auto seed : m_params.DNSSeeds()) {
+            if (seed.ends_with('.')) seed.pop_back();
+            if (host != seed || port != m_params.GetDefaultPort() || resolved.empty()) continue;
+            LOCK(m_seed_addresses_mutex);
+            auto& cached = m_seed_addresses[seed];
+            cached.clear();
+            for (const auto& address : resolved) cached.insert(address);
+        }
         if (!resolved.empty()) {
             std::shuffle(resolved.begin(), resolved.end(), FastRandomContext());
             // If the connection is made by name, it can be the case that the name resolves to more than one address.
@@ -3727,6 +3741,23 @@ std::vector<CAddress> CConnman::GetAddresses(CNode& requestor, size_t max_addres
             21h + FastRandomContext().randrange<std::chrono::microseconds>(6h);
     }
     return cache_entry.m_addrs_response_cache;
+}
+
+bool CConnman::GetSeedAddresses(std::set<CNetAddr>& addresses) const
+{
+    addresses.clear();
+    LOCK(m_seed_addresses_mutex);
+    bool complete{true};
+    for (auto seed : m_params.DNSSeeds()) {
+        if (seed.ends_with('.')) seed.pop_back();
+        const auto it = m_seed_addresses.find(seed);
+        if (it == m_seed_addresses.end()) {
+            complete = false;
+        } else {
+            addresses.insert(it->second.begin(), it->second.end());
+        }
+    }
+    return complete;
 }
 
 bool CConnman::AddNode(const AddedNodeParams& add)

@@ -1332,6 +1332,9 @@ public:
     // Count the number of block-relay-only peers we have over our limit.
     int GetExtraBlockRelayCount() const;
 
+    //! Cached base seed resolutions; performs no DNS or socket operations.
+    bool GetSeedAddresses(std::set<CNetAddr>& addresses) const;
+
     bool AddNode(const AddedNodeParams& add) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
     bool RemoveAddedNode(std::string_view node) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
     bool AddedNodesContain(const CAddress& addr) const EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
@@ -1568,6 +1571,9 @@ private:
 
     uint16_t GetDefaultPort(Network net) const;
     uint16_t GetDefaultPort(const std::string& addr) const;
+
+    mutable Mutex m_seed_addresses_mutex;
+    std::map<std::string, std::set<CNetAddr>> m_seed_addresses GUARDED_BY(m_seed_addresses_mutex);
 
     // Network usage totals
     mutable Mutex m_total_bytes_sent_mutex;

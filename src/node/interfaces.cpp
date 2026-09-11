@@ -257,6 +257,33 @@ public:
         }
         return false;
     }
+    bool isConnected(NodeId id) override
+    {
+        return m_context->connman && m_context->connman->ForNode(id, [](CNode*) { return true; });
+    }
+    bool hasMiningPeer() override
+    {
+        bool found{false};
+        if (m_context->connman) m_context->connman->ForEachNode([&](CNode* node) {
+            if (node->m_conn_type != ConnectionType::FEELER &&
+                node->m_conn_type != ConnectionType::ADDR_FETCH &&
+                node->m_conn_type != ConnectionType::PRIVATE_BROADCAST) found = true;
+        });
+        return found;
+    }
+    bool getSeedAddresses(std::set<CNetAddr>& addresses) override
+    {
+        return m_context->connman && m_context->connman->GetSeedAddresses(addresses);
+    }
+    bool addNode(const std::string& address) override
+    {
+        return m_context->connman && m_context->connman->AddNode({address,
+            bool(m_context->connman->GetLocalServices() & NODE_P2P_V2)});
+    }
+    bool removeAddedNode(const std::string& address) override
+    {
+        return m_context->connman && m_context->connman->RemoveAddedNode(address);
+    }
     std::vector<std::unique_ptr<interfaces::ExternalSigner>> listExternalSigners() override
     {
 #ifdef ENABLE_EXTERNAL_SIGNER
@@ -337,6 +364,8 @@ public:
             m_context->connman->SetNetworkActive(active);
         }
     }
+    std::unique_ptr<Mining> makeMining() override { return interfaces::MakeMining(*m_context, /*wait_loaded=*/false); }
+
     bool getNetworkActive() override { return m_context->connman && m_context->connman->GetNetworkActive(); }
     CFeeRate getDustRelayFee() override
     {
@@ -550,6 +579,11 @@ public:
     {
         const int height{WITH_LOCK(::cs_main, return chainman().ActiveChain().Height())};
         return height >= 0 ? std::optional{height} : std::nullopt;
+    }
+    std::optional<int> utxoExpiryBlocks() override
+    {
+        const auto& consensus = chainman().GetConsensus();
+        return consensus.recycle_enabled ? std::optional{consensus.recycle_expiry_blocks} : std::nullopt;
     }
     uint256 getBlockHash(int height) override
     {

@@ -6,6 +6,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 
+from test_framework.messages import CBlock, from_hex, uint256_from_compact
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.wallet import MiniWallet
 from test_framework.util import (
@@ -25,22 +26,41 @@ class RPCGenerateTest(BitcoinTestFramework):
 
     def test_generatetoaddress(self):
         node = self.nodes[0]
+        rpc = node.cli if self.options.usecli else node._rpc
         address = 'mneYUmWYsuk7kySiURxCi3AGxrAqZxLgPZ'
         self.generatetoaddress(node, 1, address)
         assert_raises_rpc_error(-5, "Invalid address", self.generatetoaddress, self.nodes[0], 1, '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy')
 
         self.log.info('Start mining at the requested nonce')
         start_nonce = 2_000_000
-        block_hash = node._rpc.generatetoaddress(1, address, 1_000_000, start_nonce)[0]
+        block_hash = rpc.generatetoaddress(1, address, 1_000_000, start_nonce)[0]
         nonce = node.getblockheader(block_hash)['nonce']
         assert start_nonce <= nonce < start_nonce + 1_000_000
 
-        self.log.info('Stop cleanly when the nonce space is exhausted')
-        exhausted = node._rpc.generatetoaddress(1, address, 1, 4_294_967_295)
-        assert len(exhausted) <= 1
+        self.log.info('Check the last nonce, including success on the final permitted try')
+        saved_time = node.mocktime
+        base_time = saved_time or node.getblockheader(node.getbestblockhash())['time']
+        outcomes = set()
+        try:
+            for offset in range(100):
+                node.setmocktime(base_time + 1000 + offset)
+                candidate = self.generateblock(node, address, [], submit=False)
+                block = from_hex(CBlock(), candidate['hex'])
+                block.nNonce = 4_294_967_295
+                expected = block.hash_int <= uint256_from_compact(block.nBits)
+                result = rpc.generatetoaddress(1, address, 1, block.nNonce)
+                assert_equal(len(result), int(expected))
+                if expected:
+                    assert_equal(result[0], block.hash_hex)
+                outcomes.add(expected)
+                if outcomes == {False, True}:
+                    break
+            assert_equal(outcomes, {False, True})
+        finally:
+            node.setmocktime(saved_time or 0)
 
         assert_raises_rpc_error(-8, "startnonce must be between 0 and 4294967295",
-                                node._rpc.generatetoaddress, 1, address, 1, 4_294_967_296)
+                                rpc.generatetoaddress, 1, address, 1, 4_294_967_296)
 
     def test_generateblock(self):
         node = self.nodes[0]

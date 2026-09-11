@@ -16,9 +16,7 @@
 #include <interfaces/wallet.h>
 #include <key_io.h>
 #include <outputtype.h>
-#include <univalue.h>
 
-#include <exception>
 
 #include <QApplication>
 #include <QClipboard>
@@ -144,6 +142,7 @@ MinerDashboard::MinerDashboard(WalletModel* wallet_model, const PlatformStyle* p
     auto* timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &MinerDashboard::refreshStatus);
     timer->start(1000);
+    m_hash_clock.start();
 
     std::vector<std::string> initial;
     ensureMiningAddresses(1, initial);
@@ -160,7 +159,11 @@ void MinerDashboard::setClientModel(ClientModel* client_model)
     m_client_model = client_model;
     m_overview->setClientModel(client_model);
     m_send->setClientModel(client_model);
-    if (client_model) m_miner = std::make_unique<CpuMiner>(client_model->node());
+    if (client_model) {
+        m_miner = std::make_unique<CpuMiner>(client_model->node());
+        m_last_hashes = 0;
+        m_hash_clock.restart();
+    }
     refreshStatus();
 }
 
@@ -172,9 +175,12 @@ bool MinerDashboard::synchronized() const
     if (!m_client_model) return false;
     // ReSatoshi can legitimately have a height-zero tip older than Core's
     // generic IBD max-tip-age heuristic before block 1 exists. Requiring a
-    // live peer and no header/block gap proves that initial peer sync has
-    // completed without creating a block-1 mining deadlock.
-    return m_client_model->getNumConnections() > 0 &&
+    // live peer and no header/block gap allows the first block to be mined.
+    // Above genesis, also require normal Core IBD completion.
+    return !m_client_model->node().isLoadingBlocks() &&
+           (!m_client_model->node().isInitialBlockDownload() || m_client_model->getNumBlocks() == 0) &&
+           m_client_model->node().getNetworkActive() &&
+           m_client_model->node().hasMiningPeer() &&
            m_client_model->getHeaderTipHeight() <= m_client_model->getNumBlocks();
 }
 
@@ -198,8 +204,7 @@ void MinerDashboard::toggleMining()
     if (!m_miner) return;
     if (m_miner->running()) {
         m_mining_button->setEnabled(false);
-        m_miner->stop();
-        m_mining_button->setEnabled(true);
+        m_miner->requestStop();
         refreshStatus();
         return;
     }
@@ -211,6 +216,8 @@ void MinerDashboard::toggleMining()
     std::vector<std::string> addresses;
     if (!ensureMiningAddresses(count, addresses)) return;
     m_last_hashes = 0;
+    m_hash_clock.restart();
+    m_miner->setPaused(false);
     m_miner->start(std::move(addresses));
     refreshStatus();
 }
@@ -221,43 +228,28 @@ void MinerDashboard::refreshStatus()
     const int headers = m_client_model ? m_client_model->getHeaderTipHeight() : 0;
     const int peers = m_client_model ? m_client_model->getNumConnections() : 0;
     m_renew->setBlockHeight(blocks);
-    if (m_client_model && peers == 0) {
-        ++m_no_peer_seconds;
-        if (m_no_peer_seconds >= 60) {
-            // This invokes the local in-process node command. It opens only a
-            // P2P connection to port 19333; it never contacts a seed RPC port.
-            for (const char* seed : {"resatoshi-seed.freeddns.org:19333",
-                                     "resatoshi-seed.duckdns.org:19333"}) {
-                try {
-                    UniValue params{UniValue::VARR};
-                    params.push_back(seed);
-                    params.push_back("onetry");
-                    m_client_model->node().executeRpc("addnode", params, "");
-                } catch (const std::exception&) {
-                    // Normal while networking is initializing; retry later.
-                }
-            }
-            m_no_peer_seconds = 0;
-        }
-    } else {
-        m_no_peer_seconds = 0;
-    }
     m_sync->setText(synchronized() ? tr("Synchronized — Block %1").arg(blocks)
                                    : tr("Synchronizing — Blocks %1 / Headers %2").arg(blocks).arg(headers));
     m_peers->setText(tr("Connected Peers: %1").arg(peers));
     const bool mining = m_miner && m_miner->running();
+    const bool stopping = m_miner && m_miner->stopping();
     m_indicator->setText(mining ? tr("● Mining — %1 thread(s)").arg(m_miner->threadCount())
                                 : tr("● Mining stopped"));
+    if (mining && m_miner->paused()) m_indicator->setText(tr("● Mining paused — waiting for synchronization and peers"));
+    if (stopping) m_indicator->setText(tr("● Stopping mining…"));
     m_indicator->setStyleSheet(mining ? "color:#18a558; font-weight:700;" : "color:#777; font-weight:600;");
     const uint64_t hashes = m_miner ? m_miner->hashes() : 0;
-    m_hashrate->setText(tr("Hashrate: %1 H/s").arg(hashes - m_last_hashes));
+    const auto elapsed_ns = m_hash_clock.nsecsElapsed();
+    const double rate = elapsed_ns > 0 ? (hashes - m_last_hashes) * 1e9 / elapsed_ns : 0;
+    m_hash_clock.restart();
+    m_hashrate->setText(tr("Hashrate: %1 H/s").arg(rate, 0, 'f', 0));
     m_last_hashes = hashes;
     m_mining_button->setText(mining ? tr("Stop Mining") : tr("Start Mining"));
-    m_mining_button->setEnabled(mining || synchronized());
+    m_mining_button->setEnabled(!stopping && (mining || synchronized()));
     m_threads->setEnabled(!mining);
     if (m_miner && !m_miner->error().empty()) {
         m_hashrate->setText(tr("Mining error: %1").arg(QString::fromStdString(m_miner->error())));
-        m_miner->stop();
+        m_miner->requestStop();
     }
     switch (m_wallet_model->getEncryptionStatus()) {
     case WalletModel::Unencrypted:

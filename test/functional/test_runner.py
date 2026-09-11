@@ -262,6 +262,8 @@ BASE_SCRIPTS = [
     'rpc_getblockfrompeer.py',
     'rpc_invalidateblock.py',
     'feature_utxo_set_hash.py',
+    'feature_recycle.py',
+    'feature_recycle_spend.py',
     'feature_rbf.py',
     'mempool_packages.py',
     'mempool_package_limits.py',

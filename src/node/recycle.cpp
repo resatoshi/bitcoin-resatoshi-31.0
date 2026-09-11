@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <node/recycle.h>
+#include <node/recycle_serialization.h>
 
 #include <coins.h>
 #include <consensus/validation.h>
@@ -42,7 +43,7 @@ struct UndoData {
     Coin schedule;
     std::vector<std::pair<COutPoint, Coin>> expired;
 
-    SERIALIZE_METHODS(UndoData, obj) { READWRITE(obj.pool_before, obj.schedule, obj.expired); }
+    SERIALIZE_METHODS(UndoData, obj) { READWRITE(obj.pool_before, Using<StateCoinFormatter>(obj.schedule), obj.expired); }
 };
 
 CScript Encode(const auto& value)
@@ -100,14 +101,16 @@ bool ReadSchedule(const CCoinsViewCache& view, int height, Coin& schedule, std::
     return true;
 }
 
-CAmount ExpiringValue(const CCoinsViewCache& view, const CBlock& block, int height)
+CAmount ExpiringValue(const CCoinsViewCache& view, const CBlock& block, int height, int expiry_blocks)
 {
-    const int origin{height - EXPIRY_BLOCKS};
+    const int origin{height - expiry_blocks};
     if (origin < 1) return 0;
 
     Coin schedule;
     std::vector<COutPoint> outputs;
-    if (!ReadSchedule(view, origin, schedule, outputs)) return 0;
+    if (!ReadSchedule(view, origin, schedule, outputs)) {
+        throw std::runtime_error("missing or corrupt recycle expiry record; rebuild chainstate from original blocks");
+    }
 
     std::set<COutPoint> spent;
     for (const auto& tx : block.vtx) {
@@ -125,13 +128,13 @@ CAmount ExpiringValue(const CCoinsViewCache& view, const CBlock& block, int heig
 }
 
 bool Apply(CCoinsViewCache& view, const CBlock& block, int height, CAmount base_reward,
-           CTxUndo* undo, std::string& error, std::vector<COutPoint>* expired_outpoints = nullptr)
+           CTxUndo* undo, std::string& error, std::vector<COutPoint>* expired_outpoints, int expiry_blocks)
 {
     UndoData undo_data;
     undo_data.pool_before = PoolBalance(view);
 
     CAmount expired_value{0};
-    const int origin{height - EXPIRY_BLOCKS};
+    const int origin{height - expiry_blocks};
     if (origin < 1) {
         if (block.vtx[0]->GetValueOut() > base_reward) {
             error = "coinbase claims recycle reward before any output can expire";
@@ -183,39 +186,43 @@ CAmount PoolBalance(const CCoinsViewCache& view)
     return coin.IsSpent() ? 0 : coin.out.nValue;
 }
 
-CAmount AvailableReward(const CCoinsViewCache& view, const CBlock& block, int height)
+CAmount AvailableReward(const CCoinsViewCache& view, const CBlock& block, int height, int expiry_blocks)
 {
-    return std::min(MAX_REWARD, PoolBalance(view) + ExpiringValue(view, block, height));
+    return std::min(MAX_REWARD, PoolBalance(view) + ExpiringValue(view, block, height, expiry_blocks));
 }
 
 bool ConnectBlock(CCoinsViewCache& view, const CBlock& block, int height, CAmount base_reward,
-                  CTxUndo& undo, std::string& error, std::vector<COutPoint>* expired)
+                  CTxUndo& undo, std::string& error, std::vector<COutPoint>* expired, int expiry_blocks)
 {
-    return Apply(view, block, height, base_reward, &undo, error, expired);
+    return Apply(view, block, height, base_reward, &undo, error, expired, expiry_blocks);
 }
 
-bool DisconnectBlock(CCoinsViewCache& view, int height, CTxUndo* undo)
+bool DisconnectBlock(CCoinsViewCache& view, int height, CTxUndo* undo, int expiry_blocks)
 {
     view.SpendCoin(ScheduleOutpoint(height));
-    if (height - EXPIRY_BLOCKS < 1) return true;
+    if (height - expiry_blocks < 1) return true;
     if (!undo || undo->vprevout.size() != 1) return false;
     UndoData data;
     if (!Decode(undo->vprevout[0].out.scriptPubKey, data)) return false;
 
-    PutStateCoin(view, PoolOutpoint(), StateCoin(data.pool_before, CScript{OP_RETURN}, height - 1));
-    view.AddCoin(ScheduleOutpoint(height - EXPIRY_BLOCKS), std::move(data.schedule),
+    if (height - expiry_blocks == 1) {
+        view.SpendCoin(PoolOutpoint());
+    } else {
+        PutStateCoin(view, PoolOutpoint(), StateCoin(data.pool_before, CScript{OP_RETURN}, height - 1));
+    }
+    view.AddCoin(ScheduleOutpoint(height - expiry_blocks), std::move(data.schedule),
                  /*possible_overwrite=*/false, /*allow_unspendable=*/true);
     for (auto& [outpoint, coin] : data.expired) view.AddCoin(outpoint, std::move(coin), false);
     return true;
 }
 
 bool RollforwardBlock(CCoinsViewCache& view, const CBlock& block, int height, CAmount base_reward,
-                      const CTxUndo* undo)
+                      const CTxUndo* undo, int expiry_blocks)
 {
-    const int origin{height - EXPIRY_BLOCKS};
+    const int origin{height - expiry_blocks};
     if (origin < 1) {
         std::string error;
-        return Apply(view, block, height, base_reward, nullptr, error);
+        return Apply(view, block, height, base_reward, nullptr, error, nullptr, expiry_blocks);
     }
     if (!undo || undo->vprevout.size() != 1) return false;
 
@@ -234,6 +241,40 @@ bool RollforwardBlock(CCoinsViewCache& view, const CBlock& block, int height, CA
     PutStateCoin(view, ScheduleOutpoint(height),
                  StateCoin(0, Encode(CurrentOutputs(view, block, height)), height));
     return true;
+}
+
+bool ReadUndo(const CTxUndo& undo, CAmount& pool_before, std::vector<std::pair<COutPoint, Coin>>& expired)
+{
+    UndoData data;
+    if (undo.vprevout.size() != 1 || !Decode(undo.vprevout[0].out.scriptPubKey, data)) return false;
+    pool_before = data.pool_before;
+    expired = std::move(data.expired);
+    return true;
+}
+
+bool ScheduleValid(const CCoinsViewCache& view, int height)
+{
+    Coin schedule;
+    std::vector<COutPoint> outputs;
+    return ReadSchedule(view, height, schedule, outputs) && schedule.nHeight == height;
+}
+
+void RestoreSchedule(CCoinsViewCache& view, const CBlock& block, int height)
+{
+    // Reproduce outputs surviving the original block, including those spent
+    // later. No dependency on today's UTXO contents or a wallet is needed.
+    std::set<COutPoint> spent;
+    for (const auto& tx : block.vtx) {
+        if (!tx->IsCoinBase()) for (const auto& input : tx->vin) spent.insert(input.prevout);
+    }
+    std::vector<COutPoint> outputs;
+    for (const auto& tx : block.vtx) {
+        for (uint32_t n = 0; n < tx->vout.size(); ++n) {
+            COutPoint outpoint{tx->GetHash(), n};
+            if (!tx->vout[n].scriptPubKey.IsUnspendable() && !spent.contains(outpoint)) outputs.push_back(outpoint);
+        }
+    }
+    PutStateCoin(view, ScheduleOutpoint(height), StateCoin(0, Encode(outputs), height));
 }
 
 } // namespace node::recycle

@@ -279,6 +279,9 @@ util::Result<CoinsResult> FetchSelectedInputs(const CWallet& wallet, const CCoin
         }
         CTxOut txout;
         if (auto txo = wallet.GetTXO(outpoint)) {
+            if (wallet.IsExpired(outpoint)) {
+                return util::Error{strprintf(_("Pre-selected input %s has expired"), outpoint.ToString())};
+            }
             txout = txo->GetTxOut();
             if (input_bytes == -1) {
                 input_bytes = CalculateMaximumSignedInputSize(txout, &wallet, &coin_control);
@@ -438,7 +441,7 @@ CoinsResult AvailableCoins(const CWallet& wallet,
         if (wallet.IsLockedCoin(outpoint) && params.skip_locked)
             continue;
 
-        if (wallet.IsSpent(outpoint))
+        if (wallet.IsUnavailable(outpoint))
             continue;
 
         if (!allow_used_addresses && wallet.IsSpentKey(output.scriptPubKey)) {

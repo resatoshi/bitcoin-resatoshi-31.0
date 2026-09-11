@@ -16,6 +16,7 @@
 #include <netaddress.h>
 
 class BanTableModel;
+class BootstrapManager;
 class CBlockIndex;
 class OptionsModel;
 class PeerTableModel;
@@ -101,6 +102,7 @@ public:
 
 private:
     interfaces::Node& m_node;
+    std::unique_ptr<BootstrapManager> m_bootstrap;
     std::vector<std::unique_ptr<interfaces::Handler>> m_event_handlers;
     OptionsModel *optionsModel;
     PeerTableModel* peerTableModel{nullptr};

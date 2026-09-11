@@ -7,11 +7,13 @@
 #include <qt/clientmodel.h>
 
 #include <qt/bantablemodel.h>
+#include <qt/bootstrapmanager.h>
 #include <qt/guiconstants.h>
 #include <qt/guiutil.h>
 #include <qt/peertablemodel.h>
 #include <qt/peertablesortproxy.h>
 
+#include <chainparams.h>
 #include <clientversion.h>
 #include <common/args.h>
 #include <common/system.h>
@@ -24,6 +26,7 @@
 #include <validation.h>
 
 #include <cstdint>
+#include <exception>
 
 #include <QDebug>
 #include <QMetaObject>
@@ -48,9 +51,18 @@ ClientModel::ClientModel(interfaces::Node& node, OptionsModel *_optionsModel, QO
 
     banTableModel = new BanTableModel(m_node, this);
 
+    if (Params().GetChainType() == ChainType::MAIN) m_bootstrap = std::make_unique<BootstrapManager>(m_node);
+
     QTimer* timer = new QTimer;
     timer->setInterval(MODEL_UPDATE_DELAY);
     connect(timer, &QTimer::timeout, [this] {
+        if (m_bootstrap) {
+            try {
+                m_bootstrap->poll();
+            } catch (const std::exception&) {
+                // Retry a failed observation on the next poll.
+            }
+        }
         // no locking required at this point
         // the following calls will acquire the required lock
         Q_EMIT mempoolSizeChanged(m_node.getMempoolSize(), m_node.getMempoolDynamicUsage(), m_node.getMempoolMaxUsage());
@@ -74,6 +86,7 @@ void ClientModel::stop()
 
     m_thread->quit();
     m_thread->wait();
+    m_bootstrap.reset();
 }
 
 ClientModel::~ClientModel()

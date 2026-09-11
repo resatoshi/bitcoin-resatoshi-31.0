@@ -7,11 +7,15 @@
 
 #include <wallet/coincontrol.h>
 #include <interfaces/chain.h>
+#include <interfaces/mining.h>
 #include <interfaces/node.h>
 #include <key_io.h>
 #include <qt/bitcoinamountfield.h>
 #include <qt/bitcoinunits.h>
 #include <qt/clientmodel.h>
+#include <qt/cpuminer.h>
+#include <qt/bootstrapmanager.h>
+#include <qt/cpuminerhash.h>
 #include <qt/minerdashboard.h>
 #include <qt/optionsmodel.h>
 #include <qt/overviewpage.h>
@@ -25,18 +29,24 @@
 #include <qt/transactiontablemodel.h>
 #include <qt/transactionview.h>
 #include <qt/walletmodel.h>
+#include <rpc/server.h>
 #include <script/solver.h>
 #include <test/util/setup_common.h>
+#include <test/util/net.h>
 #include <validation.h>
 #include <wallet/test/util.h>
 #include <wallet/wallet.h>
 
+#include <core_io.h>
+
 #include <chrono>
 #include <memory>
+#include <latch>
 
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QObject>
@@ -494,4 +504,350 @@ void WalletTests::walletTests()
     }
 #endif
     TestGUI(m_node);
+}
+
+void WalletTests::cpuMinerTests()
+{
+    TestChain100Setup test;
+    test.m_node.mining = interfaces::MakeMining(test.m_node, /*wait_loaded=*/false);
+    m_node.setContext(&test.m_node);
+    if (RPCIsInWarmup(nullptr)) SetRPCWarmupFinished();
+    const std::string address{EncodeDestination(PKHash{test.coinbaseKey.GetPubKey()})};
+    CpuMiner miner{m_node};
+    QVERIFY(!miner.start({}));
+    QVERIFY(miner.start({"invalid-test-address"}));
+    QTRY_VERIFY_WITH_TIMEOUT(!miner.running(), 10'000);
+    miner.stop();
+    QVERIFY(miner.error().find("Invalid address") != std::string::npos);
+    QVERIFY(!miner.start({address, address}));
+    for (int threads : {1, 2, 4, 8}) {
+        const int before{m_node.getNumBlocks()};
+        std::vector<std::string> destinations;
+        for (int i = 0; i < threads; ++i) {
+            CKey key;
+            key.MakeNewKey(true);
+            destinations.push_back(EncodeDestination(PKHash{key.GetPubKey()}));
+        }
+        QVERIFY(miner.start(destinations));
+        QTRY_VERIFY_WITH_TIMEOUT(m_node.getNumBlocks() > before || !miner.error().empty(), 10'000);
+        miner.setPaused(true);
+        QTRY_VERIFY_WITH_TIMEOUT(miner.paused(), 10'000);
+        QTest::qWait(100);
+        const auto paused_hashes = miner.hashes();
+        QTest::qWait(100);
+        QCOMPARE(miner.hashes(), paused_hashes);
+        miner.setPaused(false);
+        QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > paused_hashes, 10'000);
+        miner.requestStop();
+        QTRY_VERIFY_WITH_TIMEOUT(!miner.stopping(), 10'000);
+        miner.stop();
+        QVERIFY(!miner.running());
+        QVERIFY2(miner.error().empty(), miner.error().c_str());
+        QVERIFY(m_node.getNumBlocks() > before);
+        const int stopped{m_node.getNumBlocks()};
+        QTest::qWait(50);
+        QCOMPARE(m_node.getNumBlocks(), stopped);
+    }
+}
+
+
+void WalletTests::cpuMinerMainnetTests()
+{
+    // Real mainnet templates and difficulty, entirely in-memory, with fake peers.
+    // Nothing can be broadcast to an external node.
+    TestingSetup test{ChainType::MAIN};
+    m_node.setContext(&test.m_node);
+    auto& connman = static_cast<ConnmanTestMsg&>(*test.m_node.connman);
+    const auto add_peer = [&](bool connected = true) {
+        auto* peer = new CNode{0, nullptr, CAddress{}, 0, 0, CService{}, "test-peer",
+                              ConnectionType::OUTBOUND_FULL_RELAY, false, 0};
+        peer->SetCommonVersion(PROTOCOL_VERSION);
+        test.m_node.peerman->InitializeNode(*peer, ServiceFlags(NODE_NETWORK | NODE_WITNESS));
+        peer->fSuccessfullyConnected = connected;
+        connman.AddTestNode(*peer);
+        return peer;
+    };
+    const auto clear_peers = [&] {
+        for (auto* peer : connman.TestNodes()) test.m_node.peerman->FinalizeNode(*peer);
+        connman.ClearTestNodes();
+    };
+    for (int threads : {1, 2, 4, 8}) {
+        CpuMiner miner{m_node};
+        std::vector<std::string> destinations;
+        for (int i = 0; i < threads; ++i) {
+            CKey key;
+            key.MakeNewKey(true);
+            destinations.push_back(EncodeDestination(PKHash{key.GetPubKey()}));
+        }
+        QVERIFY(miner.start(destinations));
+        QTRY_VERIFY_WITH_TIMEOUT(miner.paused(), 5000);
+        QCOMPARE(miner.hashes(), uint64_t{0});
+        auto* pending = add_peer(false);
+        QTest::qWait(100);
+        QCOMPARE(miner.hashes(), uint64_t{0});
+        pending->fSuccessfullyConnected = true;
+        QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > 0 || !miner.error().empty(), 5000);
+        QVERIFY2(miner.error().empty(), miner.error().c_str());
+        const auto before = miner.hashes();
+        QElapsedTimer work_timer;
+        work_timer.start();
+        QTest::qWait(2100); // Cross template refresh boundaries at real difficulty.
+        qInfo("CPU mining: threads=%d rate=%.0f H/s", threads,
+              (miner.hashes() - before) * 1000.0 / work_timer.elapsed());
+        m_node.setNetworkActive(false);
+        QTRY_VERIFY_WITH_TIMEOUT(miner.paused(), 5000);
+        QTest::qWait(100);
+        const auto paused_hashes = miner.hashes();
+        QTest::qWait(100);
+        QCOMPARE(miner.hashes(), paused_hashes);
+        m_node.setNetworkActive(true);
+        QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > paused_hashes, 5000);
+        clear_peers();
+        QTRY_VERIFY_WITH_TIMEOUT(miner.paused(), 5000);
+        QTest::qWait(100);
+        const auto disconnected_hashes = miner.hashes();
+        QTest::qWait(100);
+        QCOMPARE(miner.hashes(), disconnected_hashes);
+        add_peer();
+        QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > disconnected_hashes, 5000);
+        QElapsedTimer stop_timer;
+        stop_timer.start();
+        miner.requestStop();
+        QVERIFY(stop_timer.elapsed() < 100);
+        QTRY_VERIFY_WITH_TIMEOUT(!miner.stopping(), 5000);
+        miner.stop();
+        qInfo("CPU mining: threads=%d stop=%lld ms", threads, static_cast<long long>(stop_timer.elapsed()));
+        QVERIFY2(miner.error().empty(), miner.error().c_str());
+        clear_peers();
+    }
+}
+
+
+void WalletTests::cpuMinerHashTests()
+{
+    BasicTestingSetup test{ChainType::REGTEST};
+    for (int i = 0; i < 100; ++i) {
+        CBlockHeader header;
+        header.nVersion = test.m_rng.rand32();
+        header.hashPrevBlock = test.m_rng.rand256();
+        header.hashMerkleRoot = test.m_rng.rand256();
+        header.nTime = test.m_rng.rand32();
+        header.nBits = test.m_rng.rand32();
+        CpuMinerHasher hasher{header};
+        for (uint32_t nonce : {uint32_t{0}, uint32_t{1}, uint32_t{0xfffffffe}, uint32_t{0xffffffff}, test.m_rng.rand32()}) {
+            header.nNonce = nonce;
+            QVERIFY(hasher.hash(nonce) == header.GetHash());
+        }
+    }
+
+    CBlockHeader header;
+    header.hashMerkleRoot = test.m_rng.rand256();
+    CpuMinerHasher hasher{header};
+    uint64_t reference_sum{0}, optimized_sum{0};
+    QElapsedTimer timer;
+    timer.start();
+    for (uint32_t nonce = 0; nonce < 1'000'000; ++nonce) {
+        header.nNonce = nonce;
+        reference_sum ^= header.GetHash().GetUint64(0);
+    }
+    const auto reference_ns = timer.nsecsElapsed();
+    timer.restart();
+    for (uint32_t nonce = 0; nonce < 1'000'000; ++nonce) {
+        optimized_sum ^= hasher.hash(nonce).GetUint64(0);
+    }
+    const auto optimized_ns = timer.nsecsElapsed();
+    QCOMPARE(reference_sum, optimized_sum);
+    qInfo("Header hashing: reference=%.0f H/s midstate=%.0f H/s", 1e15 / reference_ns, 1e15 / optimized_ns);
+}
+
+
+void WalletTests::bootstrapPolicyTests()
+{
+    using namespace std::chrono_literals;
+    using Peer = BootstrapPolicy::Peer;
+    BootstrapPolicy policy;
+    const auto start = BootstrapPolicy::Clock::time_point{};
+    QVERIFY(policy.update(start, {}, true).reconnect);
+    QVERIFY(!policy.update(start + 59s, {}, true).reconnect);
+    QVERIFY(policy.update(start + 60s, {}, true).reconnect);
+    const std::vector<Peer> three{{1, true, true}, {2, false, true}, {3, false, true}};
+    QVERIFY(policy.update(start + 61s, three, true).disconnect.empty());
+    QVERIFY(policy.update(start + 200s, three, true).disconnect.empty()); // Bootstrap is not one of the three replacements.
+    auto four = three;
+    four.push_back({4, false, true});
+    QVERIFY(policy.update(start + 201s, four, true).disconnect.empty());
+    QVERIFY(policy.update(start + 260s, four, true).disconnect.empty());
+    auto action = policy.update(start + 261s, four, true);
+    QVERIFY(action.disconnect == std::vector<int64_t>{1});
+    QVERIFY(!action.reconnect);
+    four[3].id = 5; // A replacement connection must earn its own stable interval.
+    QVERIFY(policy.update(start + 262s, four, true).disconnect.empty());
+    QVERIFY(policy.update(start + 321s, four, true).disconnect.empty());
+    QVERIFY(policy.update(start + 322s, four, true).disconnect == std::vector<int64_t>{1});
+    four[3].ready = false;
+    QVERIFY(policy.update(start + 323s, four, true).disconnect.empty());
+    four[3].ready = true;
+    QVERIFY(policy.update(start + 324s, four, true).disconnect.empty());
+    QVERIFY(policy.update(start + 383s, four, true).disconnect.empty());
+    QVERIFY(policy.update(start + 384s, four, true).disconnect == std::vector<int64_t>{1});
+    four.push_back({6, true, true}); // Both bootstrap endpoints can be retired.
+    QVERIFY(policy.update(start + 385s, four, true).disconnect == (std::vector<int64_t>{1, 6}));
+    QVERIFY(!policy.update(start + 386s, {{2, false, true}}, true).reconnect);
+    QVERIFY(policy.update(start + 387s, {}, true).reconnect); // No extra 60s delay after the last peer disappears.
+    QVERIFY(!policy.update(start + 388s, {}, false).reconnect);
+    QVERIFY(policy.update(start + 389s, {}, true).reconnect);
+}
+
+
+void WalletTests::bootstrapManagerTests()
+{
+    using namespace std::chrono_literals;
+    TestingSetup test{ChainType::MAIN};
+    m_node.setContext(&test.m_node);
+    auto& connman = static_cast<ConnmanTestMsg&>(*test.m_node.connman);
+    const auto add_peer = [&](int64_t id, const char* ip, const std::string& name) {
+        auto address = LookupNumeric(ip, 19333);
+        auto* peer = new CNode{id, nullptr, CAddress{address, NODE_NETWORK}, 0, 0, CService{}, name,
+                              ConnectionType::OUTBOUND_FULL_RELAY, false, 0};
+        {
+            LOCK(NetEventsInterface::g_msgproc_mutex);
+            connman.Handshake(*peer, true, ServiceFlags(NODE_NETWORK | NODE_WITNESS),
+                              ServiceFlags(NODE_NETWORK | NODE_WITNESS), PROTOCOL_VERSION, true);
+        }
+        connman.AddTestNode(*peer);
+        return peer;
+    };
+    const auto clear_peers = [&] {
+        for (auto* peer : connman.TestNodes()) test.m_node.peerman->FinalizeNode(*peer);
+        connman.ClearTestNodes();
+    };
+    int connects{0}, removes{0};
+    BootstrapManager manager{m_node,
+        [&](const std::string&, bool add) { if (add) ++connects; else ++removes; return true; }};
+    const auto start = BootstrapManager::Clock::time_point{};
+    manager.poll(start);
+    QCOMPARE(connects, 2);
+    manager.poll(start + 1s);
+    auto* bootstrap_ip = add_peer(1, "192.0.2.10", "192.0.2.10:19333");
+    auto* bootstrap_name = add_peer(5, "192.0.2.11", "resatoshi-seed.duckdns.org:19333");
+    auto* regular1 = add_peer(2, "192.0.2.20", "192.0.2.20:19333");
+    auto* regular2 = add_peer(3, "192.0.2.21", "192.0.2.21:19333");
+    auto* regular3 = add_peer(4, "192.0.2.22", "192.0.2.22:19333");
+    // Exercise Core's cached resolution using a fake resolver and existing
+    // connections. No DNS or socket connection can reach the outside network.
+    const auto original_lookup = g_dns_lookup;
+    const auto first_address = LookupNumeric("192.0.2.10", 19333);
+    const auto second_address = LookupNumeric("192.0.2.11", 19333);
+    g_dns_lookup = [&](const std::string& host, bool) {
+        if (host.starts_with("resatoshi-seed.freeddns.org")) return std::vector<CNetAddr>{first_address};
+        if (host.starts_with("resatoshi-seed.duckdns.org")) return std::vector<CNetAddr>{second_address};
+        return original_lookup(host, false);
+    };
+    for (const auto& seed : Params().DNSSeeds()) {
+        const auto destination = seed + ":19333";
+        connman.OpenNetworkConnection(CAddress{}, false, {}, destination.c_str(), ConnectionType::MANUAL, false);
+    }
+    g_dns_lookup = original_lookup;
+    std::set<CNetAddr> cached;
+    QVERIFY(m_node.getSeedAddresses(cached));
+    QCOMPARE(cached.size(), size_t{2});
+    // Even three stable peers must not retire bootstrap during IBD.
+    QVERIFY(m_node.isInitialBlockDownload());
+    manager.poll(start + 2s);
+    manager.poll(start + 100s);
+    QVERIFY(!bootstrap_ip->fDisconnect);
+    QCOMPARE(removes, 0);
+    SetMockTime(Params().GenesisBlock().GetBlockTime() + 1);
+    {
+        LOCK(cs_main);
+        test.m_node.chainman->UpdateIBDStatus();
+    }
+    QVERIFY(!m_node.isInitialBlockDownload());
+    SetMockTime(0);
+    manager.poll(start + 101s);
+    // A failed try-lock observation must not erase the 60-second interval.
+    std::latch locked{1}, unlock{1};
+    std::thread busy{[&] {
+        LOCK(cs_main);
+        locked.count_down();
+        unlock.wait();
+    }};
+    locked.wait();
+    manager.poll(start + 130s);
+    unlock.count_down();
+    busy.join();
+    manager.poll(start + 160s);
+    QVERIFY(!bootstrap_ip->fDisconnect);
+    QVERIFY(!bootstrap_name->fDisconnect);
+    manager.poll(start + 161s);
+    QVERIFY(bootstrap_ip->fDisconnect);
+    QVERIFY(bootstrap_name->fDisconnect);
+    QCOMPARE(removes, 2);
+    QVERIFY(!regular1->fDisconnect && !regular2->fDisconnect && !regular3->fDisconnect);
+    clear_peers();
+    add_peer(6, "192.0.2.23", "192.0.2.23:19333");
+    manager.poll(start + 162s);
+    QCOMPARE(connects, 2);
+    clear_peers();
+    manager.poll(start + 163s);
+    QTRY_COMPARE_WITH_TIMEOUT(connects, 4, 5000);
+    m_node.setNetworkActive(false);
+    manager.poll(start + 224s);
+    QCOMPARE(connects, 4);
+    m_node.setNetworkActive(true);
+    manager.poll(start + 225s);
+    QTRY_COMPARE_WITH_TIMEOUT(connects, 6, 5000);
+    // Core registration is nonblocking and manager destruction preserves
+    // an entry explicitly supplied by the user.
+    const std::string user_seed{"resatoshi-seed.freeddns.org:19333"};
+    QVERIFY(connman.AddNode({user_seed, false}));
+    {
+        BootstrapManager core_manager{m_node};
+        core_manager.poll(start);
+        QCOMPARE(connman.GetAddedNodeInfo(/*include_connected=*/true).size(), size_t{2});
+    }
+    const auto added = connman.GetAddedNodeInfo(/*include_connected=*/true);
+    QCOMPARE(added.size(), size_t{1});
+    QCOMPARE(added[0].m_params.m_added_node, user_seed);
+    QVERIFY(connman.RemoveAddedNode(user_seed));
+}
+
+void WalletTests::cpuMinerOldTipTests()
+{
+    TestingSetup test{ChainType::MAIN};
+    m_node.setContext(&test.m_node);
+    CBlock block;
+    // Public mainnet block 1, read from the operating node without modifying it.
+    QVERIFY(DecodeHexBlk(block, "00000020ec740156fa8f5bbe37f8ad3b43144f68746f9c960046ddfc45328179030000003955d305c79fb00d64765a20de3070475f4f293e3465b670abd8db7075e9caa336fd9f6a12a1031d0f59000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff025100feffffff0200f2052a01000000160014274db26c53b6d883fa72cda65452e186fa1cd43d0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
+    SetMockTime(block.GetBlockTime() + 2 * 24 * 60 * 60);
+    QVERIFY(test.m_node.chainman->ProcessNewBlock(std::make_shared<const CBlock>(block), /*force_processing=*/true, /*min_pow_checked=*/true, nullptr));
+    QCOMPARE(m_node.getNumBlocks(), 1);
+    QVERIFY(m_node.isInitialBlockDownload());
+    auto& connman = static_cast<ConnmanTestMsg&>(*test.m_node.connman);
+    auto* peer = new CNode{0, nullptr, CAddress{}, 0, 0, CService{}, "old-tip-test",
+                          ConnectionType::OUTBOUND_FULL_RELAY, false, 0};
+    peer->SetCommonVersion(PROTOCOL_VERSION);
+    test.m_node.peerman->InitializeNode(*peer, ServiceFlags(NODE_NETWORK | NODE_WITNESS));
+    peer->fSuccessfullyConnected = true;
+    connman.AddTestNode(*peer);
+    CKey key;
+    key.MakeNewKey(true);
+    CpuMiner miner{m_node};
+    QVERIFY(miner.start({EncodeDestination(PKHash{key.GetPubKey()})}));
+    QTRY_VERIFY_WITH_TIMEOUT(miner.paused(), 5000);
+    QTest::qWait(100);
+    QCOMPARE(miner.hashes(), uint64_t{0});
+    // Model a recent tip. This is a test clock change, not a recovery policy.
+    SetMockTime(block.GetBlockTime() + 1);
+    {
+        LOCK(cs_main);
+        test.m_node.chainman->UpdateIBDStatus();
+    }
+    QVERIFY(!m_node.isInitialBlockDownload());
+    QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > 0 || !miner.error().empty(), 5000);
+    miner.stop();
+    QVERIFY2(miner.error().empty(), miner.error().c_str());
+    SetMockTime(0);
+    test.m_node.peerman->FinalizeNode(*peer);
+    connman.ClearTestNodes();
 }

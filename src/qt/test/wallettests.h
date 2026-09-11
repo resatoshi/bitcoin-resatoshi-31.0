@@ -22,6 +22,12 @@ class WalletTests : public QObject
 
 private Q_SLOTS:
     void walletTests();
+    void cpuMinerTests();
+    void bootstrapPolicyTests();
+    void bootstrapManagerTests();
+    void cpuMinerHashTests();
+    void cpuMinerMainnetTests();
+    void cpuMinerOldTipTests();
 };
 
 #endif // BITCOIN_QT_TEST_WALLETTESTS_H

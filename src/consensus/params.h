@@ -123,6 +123,7 @@ struct Params {
     int64_t nASERTHalfLife{0};
     /** Enable ReSatoshi UTXO expiry and recycle-pool accounting. */
     bool recycle_enabled{false};
+    int recycle_expiry_blocks{5'256'000};
     std::chrono::seconds PowTargetSpacing() const
     {
         return std::chrono::seconds{nPowTargetSpacing};

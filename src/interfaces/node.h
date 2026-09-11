@@ -42,6 +42,7 @@ class CCoinControl;
 
 namespace interfaces {
 class Handler;
+class Mining;
 class WalletLoader;
 struct BlockTip;
 
@@ -147,6 +148,19 @@ public:
     //! Disconnect node by id.
     virtual bool disconnectById(NodeId id) = 0;
 
+    //! Whether a peer has completed its handshake and is not disconnecting.
+    virtual bool isConnected(NodeId id) = 0;
+
+    //! At least one handshake-complete block relay connection.
+    virtual bool hasMiningPeer() = 0;
+
+    //! Reuse connection-thread seed resolutions without performing DNS.
+    virtual bool getSeedAddresses(std::set<CNetAddr>& addresses) = 0;
+
+    //! Update Core's background connection list without waiting for DNS/connect.
+    virtual bool addNode(const std::string& address) = 0;
+    virtual bool removeAddedNode(const std::string& address) = 0;
+
     //! Return list of external signers (attached devices which can sign transactions).
     virtual std::vector<std::unique_ptr<ExternalSigner>> listExternalSigners() = 0;
 
@@ -173,6 +187,9 @@ public:
 
     //! Get network local addresses.
     virtual std::map<CNetAddr, LocalServiceInfo> getNetLocalAddresses() = 0;
+
+    //! Create an independent in-process mining interface.
+    virtual std::unique_ptr<Mining> makeMining() = 0;
 
     //! Get best block hash.
     virtual uint256 getBestBlockHash() = 0;
