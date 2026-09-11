@@ -123,6 +123,10 @@ static ChainstateLoadResult CompleteChainstateInitialization(
                 return {ChainstateLoadStatus::FAILURE, _("Error initializing block database")};
             }
             assert(chainstate->m_chain.Tip() != nullptr);
+        } else if (chainman.GetConsensus().recycle_enabled) {
+            // A new chainstate has no legacy records to audit. This marker
+            // also prevents old binaries from reopening the repaired state.
+            chainstate->CoinsDB().MarkRecycleStateReady();
         }
     }
 

@@ -197,7 +197,9 @@ static GCSFilter::ElementSet BasicFilterElements(const CBlock& block,
         }
     }
 
-    for (const CTxUndo& tx_undo : block_undo.vtxundo) {
+    // The optional final recycle undo is local metadata, not a transaction.
+    for (size_t i{0}; i < block_undo.vtxundo.size() && i + 1 < block.vtx.size(); ++i) {
+        const CTxUndo& tx_undo{block_undo.vtxundo[i]};
         for (const Coin& prevout : tx_undo.vprevout) {
             const CScript& script = prevout.out.scriptPubKey;
             if (script.empty()) continue;

@@ -8,6 +8,7 @@
 #include <coins.h>
 #include <dbwrapper.h>
 #include <logging/timer.h>
+#include <node/recycle_serialization.h>
 #include <primitives/transaction.h>
 #include <random.h>
 #include <serialize.h>
@@ -25,6 +26,8 @@ static constexpr uint8_t DB_BEST_BLOCK{'B'};
 static constexpr uint8_t DB_HEAD_BLOCKS{'H'};
 // Keys used in previous version that might still be found in the DB:
 static constexpr uint8_t DB_COINS{'c'};
+// Old binaries reject databases containing this key via NeedsUpgrade().
+static constexpr uint8_t DB_RECYCLE_CODEC{'r'};
 
 // Threshold for warning when writing this many dirty cache entries to disk.
 static constexpr size_t WARN_FLUSH_COINS_COUNT{10'000'000};
@@ -35,7 +38,21 @@ bool CCoinsViewDB::NeedsUpgrade()
     // DB_COINS was deprecated in v0.15.0, commit
     // 1088b02f0ccd7358d2b7076bb9e122d59d502d02
     cursor->Seek(std::make_pair(DB_COINS, uint256{}));
-    return cursor->Valid();
+    uint8_t key{0};
+    if (cursor->Valid() && cursor->GetKey(key) && key == DB_COINS) return true;
+    int version{0};
+    return m_db->Exists(DB_RECYCLE_CODEC) && (!m_db->Read(DB_RECYCLE_CODEC, version) || version != 1);
+}
+
+bool CCoinsViewDB::RecycleStateReady() const
+{
+    int version{0};
+    return m_db->Read(DB_RECYCLE_CODEC, version) && version == 1;
+}
+
+void CCoinsViewDB::MarkRecycleStateReady()
+{
+    m_db->Write(DB_RECYCLE_CODEC, 1, /*fSync=*/true);
 }
 
 namespace {
@@ -71,7 +88,12 @@ void CCoinsViewDB::ResizeCache(size_t new_cache_size)
 
 std::optional<Coin> CCoinsViewDB::GetCoin(const COutPoint& outpoint) const
 {
-    if (Coin coin; m_db->Read(CoinEntry(&outpoint), coin)) {
+    Coin coin;
+    auto metadata = Using<node::recycle::StateCoinFormatter>(coin);
+    const bool found{node::recycle::IsStateOutpoint(outpoint)
+        ? m_db->Read(CoinEntry(&outpoint), metadata)
+        : m_db->Read(CoinEntry(&outpoint), coin)};
+    if (found) {
         Assert(!coin.IsSpent()); // The UTXO database should never contain spent coins
         return coin;
     }
@@ -222,6 +244,10 @@ bool CCoinsViewDBCursor::GetKey(COutPoint &key) const
 
 bool CCoinsViewDBCursor::GetValue(Coin &coin) const
 {
+    if (node::recycle::IsStateOutpoint(keyTmp.second)) {
+        auto formatted = Using<node::recycle::StateCoinFormatter>(coin);
+        return pcursor->GetValue(formatted);
+    }
     return pcursor->GetValue(coin);
 }
 

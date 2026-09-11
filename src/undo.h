@@ -9,6 +9,7 @@
 #include <coins.h>
 #include <compressor.h>
 #include <consensus/consensus.h>
+#include <node/recycle_serialization.h>
 #include <primitives/transaction.h>
 #include <serialize.h>
 
@@ -44,7 +45,10 @@ struct TxInUndoFormatter
             unsigned int nVersionDummy;
             ::Unserialize(s, VARINT(nVersionDummy));
         }
-        ::Unserialize(s, Using<TxOutCompression>(txout.out));
+        ::Unserialize(s, Using<AmountCompression>(txout.out.nValue));
+        // A recycle undo is an internal OP_RETURN record, not a spendable
+        // script. Preserve it, including legacy files already on disk.
+        ::Unserialize(s, Using<node::recycle::MetadataScriptCompression>(txout.out.scriptPubKey));
     }
 };
 

@@ -763,6 +763,19 @@ void CWallet::SyncMetaData(std::pair<TxSpends::iterator, TxSpends::iterator> ran
     }
 }
 
+/** Expiry is derived from the wallet tip, so reorgs restore availability. */
+bool CWallet::IsExpired(const COutPoint& outpoint) const
+{
+    AssertLockHeld(cs_wallet);
+    if (!HaveChain()) return false;
+    const auto lifetime{chain().utxoExpiryBlocks()};
+    const auto it{mapWallet.find(outpoint.hash)};
+    // At tip h + lifetime the expiry block has already removed the output.
+    // Before that block, spending in the expiry block itself is still valid.
+    return lifetime && it != mapWallet.end() && it->second.isConfirmed() &&
+           GetTxDepthInMainChain(it->second) > *lifetime;
+}
+
 /**
  * Outpoint is spent if any non-conflicted transaction
  * spends it:

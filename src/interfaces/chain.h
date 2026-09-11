@@ -124,6 +124,9 @@ public:
     //! any blocks)
     virtual std::optional<int> getHeight() = 0;
 
+    //! Confirmed output lifetime, or no expiry on non-recycling chains.
+    virtual std::optional<int> utxoExpiryBlocks() { return std::nullopt; }
+
     //! Get block hash. Height must be valid or this function will abort.
     virtual uint256 getBlockHash(int height) = 0;
 

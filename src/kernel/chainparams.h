@@ -152,6 +152,7 @@ public:
         std::unordered_map<Consensus::BuriedDeployment, int> activation_heights{};
         bool fastprune{false};
         bool enforce_bip94{false};
+        bool recycle{false};
     };
 
     static std::unique_ptr<const CChainParams> RegTest(const RegTestOptions& options);
