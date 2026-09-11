@@ -3,7 +3,6 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <index/coinstatsindex.h>
-#include <node/recycle.h>
 
 #include <arith_uint256.h>
 #include <chain.h>
@@ -11,6 +10,7 @@
 #include <coins.h>
 #include <common/args.h>
 #include <consensus/amount.h>
+#include <consensus/params.h>
 #include <crypto/muhash.h>
 #include <dbwrapper.h>
 #include <index/base.h>
@@ -18,6 +18,7 @@
 #include <interfaces/chain.h>
 #include <interfaces/types.h>
 #include <kernel/coinstats.h>
+#include <node/recycle.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
@@ -29,6 +30,7 @@
 #include <util/log.h>
 #include <validation.h>
 
+#include <algorithm>
 #include <compare>
 #include <limits>
 #include <span>
