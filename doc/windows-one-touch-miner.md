@@ -219,3 +219,11 @@ latest lookup (at most 256 endpoints), valid for 15 minutes. A new attempt
 replaces the snapshot. An already identified bootstrap connection remains
 excluded by NodeId until it ends, so expiring DNS records cannot promote it
 into the three replacement peers. Old IPs are not retained across handoff.
+
+## Renewal recovery (local 31.0.9)
+
+If transaction preparation fails, the renewal preview is discarded and the
+UTXO list is refreshed. No prepared batch is sent. Review the updated selection
+and preview again to obtain a fresh exact-fee confirmation. Periodic refresh
+uses an outpoint set to preserve eligible selections without scanning the full
+selection list for every row.

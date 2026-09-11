@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <exception>
 #include <memory>
+#include <set>
 
 #include <QAbstractItemView>
 #include <QGroupBox>
@@ -140,7 +141,8 @@ void RenewUtxos::refresh()
         m_status->setText(lines.join("\n"));
     }
     if (m_preview_ready) return;
-    const auto previously_selected = selectedCoins();
+    std::set<COutPoint> previously_selected;
+    for (const auto& coin : selectedCoins()) previously_selected.insert(coin.outpoint);
     m_refreshing = true;
     m_rows.clear();
     m_table->setRowCount(0);
@@ -156,7 +158,7 @@ void RenewUtxos::refresh()
             m_rows.push_back({outpoint, coin.txout.nValue, expiry, coin.input_bytes, eligible});
             auto* check = new QTableWidgetItem;
             check->setFlags(eligible ? Qt::ItemIsEnabled | Qt::ItemIsUserCheckable : Qt::NoItemFlags);
-            const bool selected = std::any_of(previously_selected.begin(), previously_selected.end(), [&](const CoinRow& old) { return old.outpoint == outpoint; });
+            const bool selected = eligible && previously_selected.contains(outpoint);
             check->setCheckState(selected ? Qt::Checked : Qt::Unchecked);
             m_table->setItem(row, 0, check);
             m_table->setItem(row, 1, new QTableWidgetItem(formatAmount(coin.txout.nValue)));
@@ -319,7 +321,11 @@ void RenewUtxos::renew()
         auto transaction = std::make_unique<WalletModelTransaction>(QList<SendCoinsRecipient>{recipient});
         const auto status = m_wallet_model->prepareTransaction(*transaction, control);
         if (status.status != WalletModel::OK) {
-            m_status->setText(tr("Transaction preparation failed (%1). Nothing was sent; refresh and try again.").arg(static_cast<int>(status.status)));
+            // Inputs can be spent, locked or expire while the preview is open.
+            // Drop it before refresh(), which deliberately preserves live previews.
+            clearPreview();
+            refresh();
+            m_status->setText(tr("Transaction preparation failed (%1). Nothing was sent. The UTXO list has been refreshed; review your selection and preview again.").arg(static_cast<int>(status.status)));
             return;
         }
         exact_fee += transaction->getTransactionFee();

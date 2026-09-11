@@ -28,6 +28,7 @@
 #include <qt/recentrequeststablemodel.h>
 #include <qt/renewutxos.h>
 #include <QSignalSpy>
+#include <QStringList>
 #include <QSettings>
 #include <QLineEdit>
 #include <qt/sendcoinsdialog.h>
@@ -310,6 +311,28 @@ void TestGUI(interfaces::Node& node, const std::shared_ptr<CWallet>& wallet)
     select_all->click();
     QCOMPARE(selection_signals.count(), 0);
     QVERIFY(preview->isEnabled());
+    // Periodic refresh must preserve a partial selection by outpoint.
+    auto* renewal = dashboard.findChild<RenewUtxos*>("renewUtxosPanel");
+    QVERIFY(renewal);
+    const auto selected_outpoints = [&] {
+        QStringList result;
+        for (int row = 0; row < renew_table->rowCount(); ++row) {
+            if (renew_table->item(row, 0)->checkState() == Qt::Checked) result.push_back(renew_table->item(row, 5)->text());
+        }
+        result.sort();
+        return result;
+    };
+    for (int row = 0; row < renew_table->rowCount(); ++row) {
+        if (renew_table->item(row, 0)->checkState() == Qt::Checked) {
+            renew_table->item(row, 0)->setCheckState(Qt::Unchecked);
+            break;
+        }
+    }
+    const auto partial_selection = selected_outpoints();
+    QVERIFY(!partial_selection.empty());
+    QVERIFY(QMetaObject::invokeMethod(renewal, "refresh", Qt::DirectConnection));
+    QCOMPARE(selected_outpoints(), partial_selection);
+    select_all->click();
     preview->click();
     QVERIFY(dashboard.findChild<QLabel*>("renewDestination")->text().contains("New address"));
     QVERIFY(dashboard.findChild<QLabel*>("renewSummary")->text().contains("fallback", Qt::CaseInsensitive));
@@ -333,6 +356,37 @@ void TestGUI(interfaces::Node& node, const std::shared_ptr<CWallet>& wallet)
     QCOMPARE(transactionTableModel->rowCount({}), 107);
     QVERIFY(FindTx(*transactionTableModel, txid1).isValid());
     QVERIFY(FindTx(*transactionTableModel, txid2).isValid());
+
+    // Force a real preparation failure through the wallet fee limit. The
+    // refreshed list must also drop inputs spent since the preview opened,
+    // and a new preview must reach exact-fee confirmation after recovery.
+    QSignalSpy renewed(renewal, &RenewUtxos::coinsSent);
+    // Cancel an unexpected confirmation as well, so regressions fail safely.
+    ConfirmSend(nullptr, QMessageBox::Cancel);
+    const auto saved_max_fee = WITH_LOCK(wallet->cs_wallet, return wallet->m_default_max_tx_fee);
+    WITH_LOCK(wallet->cs_wallet, wallet->m_default_max_tx_fee = 0);
+    preview->click();
+    WITH_LOCK(wallet->cs_wallet, wallet->m_default_max_tx_fee = saved_max_fee);
+    QVERIFY(dashboard.findChild<QLabel*>("renewStatus")->text().contains("Transaction preparation failed"));
+    QCOMPARE(preview->text(), QString::fromUtf8("Renew UTXOs — Preview"));
+    QCOMPARE(renewed.count(), 0);
+    qApp->processEvents();
+    QCOMPARE(transactionTableModel->rowCount({}), 107);
+    const auto refreshed_selection = selected_outpoints();
+    QVERIFY(!refreshed_selection.empty());
+    QVERIFY(QMetaObject::invokeMethod(renewal, "refresh", Qt::DirectConnection));
+    QCOMPARE(selected_outpoints(), refreshed_selection);
+    select_all->click();
+    preview->click();
+    QVERIFY(dashboard.findChild<QLabel*>("renewStatus")->text().contains("Review"));
+    QString renewal_confirmation;
+    ConfirmSend(&renewal_confirmation, QMessageBox::Cancel);
+    preview->click();
+    QVERIFY(renewal_confirmation.contains("Exact total fee"));
+    QVERIFY(dashboard.findChild<QLabel*>("renewStatus")->text().contains("Renewal cancelled"));
+    QCOMPARE(renewed.count(), 0);
+    qApp->processEvents();
+    QCOMPARE(transactionTableModel->rowCount({}), 107);
 
     // Call bumpfee. Test canceled fullrbf bump, canceled bip-125-rbf bump, passing bump, and then failing bump.
     BumpFee(transactionView, txid1, /*expectDisabled=*/false, /*expectError=*/{}, /*cancel=*/true);
