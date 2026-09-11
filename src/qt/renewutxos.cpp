@@ -30,6 +30,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -77,6 +78,7 @@ RenewUtxos::RenewUtxos(WalletModel* wallet_model, QWidget* parent)
     m_destination->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_destination->setWordWrap(true);
     m_status = new QLabel;
+    m_status->setTextFormat(Qt::PlainText);
     m_status->setObjectName("renewStatus");
     m_status->setWordWrap(true);
     m_renew = new QPushButton(tr("Renew UTXOs — Preview"));
@@ -109,6 +111,18 @@ QString RenewUtxos::formatAmount(CAmount amount) const
     return BitcoinUnits::formatWithUnit(m_wallet_model->getOptionsModel()->getDisplayUnit(), amount);
 }
 
+QString RenewUtxos::transactionStatus(const interfaces::WalletTxStatus& status)
+{
+    if (status.depth_in_main_chain > 0) return tr("Confirmed at block %1 (%2 confirmation(s))")
+        .arg(status.block_height).arg(status.depth_in_main_chain);
+    if (status.depth_in_main_chain < 0 || status.is_mempool_conflicted) return tr("Conflicted — another transaction spends these inputs");
+    if (status.is_abandoned) return tr("Abandoned — not scheduled for rebroadcast");
+    if (status.is_in_mempool) return tr("Accepted by this node — awaiting block confirmation");
+    if (!status.last_broadcast_error.empty()) return tr("Last submission rejected: %1 — not currently in this node's mempool")
+        .arg(QString::fromStdString(status.last_broadcast_error));
+    return tr("Pending submission — not currently in this node's mempool");
+}
+
 void RenewUtxos::refresh()
 {
     if (!m_sent_txids.empty()) {
@@ -118,12 +132,7 @@ void RenewUtxos::refresh()
             int blocks{0};
             int64_t block_time{0};
             if (m_wallet_model->wallet().tryGetTxStatus(txid, status, blocks, block_time)) {
-                if (status.depth_in_main_chain > 0) {
-                    lines.push_back(tr("%1 — confirmed at block %2 (%3 confirmation(s))")
-                        .arg(QString::fromStdString(txid.ToString())).arg(status.block_height).arg(status.depth_in_main_chain));
-                } else {
-                    lines.push_back(tr("%1 — unconfirmed").arg(QString::fromStdString(txid.ToString())));
-                }
+                lines.push_back(QString::fromStdString(txid.ToString()) + " — " + transactionStatus(status));
             } else {
                 lines.push_back(tr("%1 — status temporarily unavailable").arg(QString::fromStdString(txid.ToString())));
             }
@@ -233,12 +242,16 @@ void RenewUtxos::selectionChanged()
 
 void RenewUtxos::selectNearExpiry()
 {
+    const QSignalBlocker blocker{m_table};
     for (int row = 0; row < m_table->rowCount(); ++row) if (m_rows[row].eligible) m_table->item(row, 0)->setCheckState(m_rows[row].expiry_height - m_height <= NEAR_EXPIRY_BLOCKS ? Qt::Checked : Qt::Unchecked);
+    selectionChanged();
 }
 
 void RenewUtxos::selectAllEligible()
 {
+    const QSignalBlocker blocker{m_table};
     for (int row = 0; row < m_table->rowCount(); ++row) if (m_rows[row].eligible) m_table->item(row, 0)->setCheckState(Qt::Checked);
+    selectionChanged();
 }
 
 void RenewUtxos::renew()
@@ -349,7 +362,7 @@ void RenewUtxos::renew()
         refresh();
         return;
     }
-    m_status->setText(tr("Broadcast; awaiting confirmation:\n%1").arg(txids.join("\n")));
+    m_status->setText(tr("Saved to wallet; checking submission status:\n%1").arg(txids.join("\n")));
     clearPreview();
     Q_EMIT coinsSent();
     refresh();

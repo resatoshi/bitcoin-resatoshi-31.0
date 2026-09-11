@@ -402,6 +402,9 @@ struct WalletTx
 //! Updated transaction status.
 struct WalletTxStatus
 {
+    bool is_in_mempool{false};
+    bool is_mempool_conflicted{false};
+    std::string last_broadcast_error;
     int block_height;
     int blocks_to_maturity;
     int depth_in_main_chain;

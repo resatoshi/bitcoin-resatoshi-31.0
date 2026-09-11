@@ -12,6 +12,8 @@
 
 #include <vector>
 
+namespace interfaces { struct WalletTxStatus; }
+
 class QLabel;
 class QPushButton;
 class QTableWidget;
@@ -23,6 +25,7 @@ class RenewUtxos : public QWidget
 public:
     explicit RenewUtxos(WalletModel* wallet_model, QWidget* parent = nullptr);
     void setBlockHeight(int height);
+    static QString transactionStatus(const interfaces::WalletTxStatus& status);
 
 Q_SIGNALS:
     void coinsSent();

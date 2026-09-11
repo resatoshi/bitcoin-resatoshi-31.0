@@ -102,6 +102,9 @@ WalletTxStatus MakeWalletTxStatus(const CWallet& wallet, const CWalletTx& wtx)
     result.lock_time = wtx.tx->nLockTime;
     result.is_trusted = CachedTxIsTrusted(wallet, wtx);
     result.is_abandoned = wtx.isAbandoned();
+    result.is_in_mempool = wtx.InMempool();
+    result.is_mempool_conflicted = wtx.isMempoolConflicted();
+    result.last_broadcast_error = wtx.m_last_broadcast_error;
     result.is_coinbase = wtx.IsCoinBase();
     result.is_in_main_chain = wtx.isConfirmed();
     return result;

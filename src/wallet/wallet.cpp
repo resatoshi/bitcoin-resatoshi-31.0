@@ -2057,6 +2057,8 @@ bool CWallet::SubmitTxMemoryPoolAndRelay(CWalletTx& wtx,
     // If transaction was previously in the mempool, it should be updated when
     // TransactionRemovedFromMempool fires.
     bool ret = chain().broadcastTransaction(wtx.tx, m_default_max_tx_fee, broadcast_method, err_string);
+    wtx.m_last_broadcast_error = ret ? std::string{} :
+        (err_string.empty() ? "Local submission failed without a detailed reason" : err_string);
     if (ret) wtx.m_state = TxStateInMempool{};
     return ret;
 }

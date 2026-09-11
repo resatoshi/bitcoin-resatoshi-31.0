@@ -67,7 +67,7 @@ Uninstalling the program does not need to delete the wallet or chain data.
 Back up the wallet before deliberately removing the data directory.
 
 
-## CPU mining implementation (local 31.0.5 build)
+## CPU mining implementation (local 31.0.6 build)
 
 Workers use the local Core mining interface, reuse a block template for up to
 one second, and assign a unique coinbase extranonce to every template. Work is
@@ -148,3 +148,16 @@ Readiness reflects the information available from connected peers, not proof
 that an unreachable peer has no stronger chain. Mining is not automatically
 started; press Start Mining as usual. A running miner pauses when prerequisites
 are lost and resumes when they return.
+
+## Renewal status (local 31.0.6)
+
+Renewal tracks wallet-only pending submission, local mempool acceptance,
+last submission rejection with its reason, conflicts, abandonment and block
+confirmation separately. Local mempool acceptance is not proof of network-wide
+propagation. Rejection diagnostics are transient and are not serialized into
+wallet backups. After restart, absence of a rejection record is not evidence
+of successful submission; pending state remains distinct from confirmation.
+The panel tracks renewals submitted during its current lifetime.
+
+Bulk selection (all eligible or near expiry) recomputes the selected total and
+fee estimate once after all checkboxes have been updated.

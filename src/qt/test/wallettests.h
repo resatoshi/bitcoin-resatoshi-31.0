@@ -22,6 +22,7 @@ class WalletTests : public QObject
 
 private Q_SLOTS:
     void walletTests();
+    void renewalStatusTests();
     void cpuMinerTests();
     void bootstrapPolicyTests();
     void bootstrapManagerTests();

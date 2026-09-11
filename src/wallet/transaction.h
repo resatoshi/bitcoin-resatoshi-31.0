@@ -268,6 +268,8 @@ public:
 
     CTransactionRef tx;
     TxState m_state;
+    // Last local submission error; transient diagnostic, never serialized.
+    std::string m_last_broadcast_error;
 
     // Set of mempool transactions that conflict
     // directly with the transaction, or that conflict

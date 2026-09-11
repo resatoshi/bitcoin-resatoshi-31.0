@@ -11,6 +11,7 @@
 #include <interfaces/node.h>
 #include <key_io.h>
 #include <netmessagemaker.h>
+#include <node/types.h>
 #include <qt/bitcoinamountfield.h>
 #include <qt/bitcoinunits.h>
 #include <qt/clientmodel.h>
@@ -25,6 +26,8 @@
 #include <qt/receivecoinsdialog.h>
 #include <qt/receiverequestdialog.h>
 #include <qt/recentrequeststablemodel.h>
+#include <qt/renewutxos.h>
+#include <QSignalSpy>
 #include <qt/sendcoinsdialog.h>
 #include <qt/sendcoinsentry.h>
 #include <qt/transactiontablemodel.h>
@@ -299,7 +302,9 @@ void TestGUI(interfaces::Node& node, const std::shared_ptr<CWallet>& wallet)
     QVERIFY(select_all);
     QVERIFY(preview);
     QVERIFY(renew_table->rowCount() > 0);
+    QSignalSpy selection_signals(renew_table, &QTableWidget::itemChanged);
     select_all->click();
+    QCOMPARE(selection_signals.count(), 0);
     QVERIFY(preview->isEnabled());
     preview->click();
     QVERIFY(dashboard.findChild<QLabel*>("renewDestination")->text().contains("New address"));
@@ -905,4 +910,59 @@ void WalletTests::cpuMinerOldTipTests()
         test.m_node.peerman->FinalizeNode(*peer);
         connman.ClearTestNodes();
     }
+}
+
+void WalletTests::renewalStatusTests()
+{
+    // Use an independent funded chain: the original send-dialog fixture
+    // intentionally permits zero-fee wallet commits rejected by relay policy.
+    TestChain100Setup test;
+    m_node.setContext(&test.m_node);
+    auto wallet = wallet::CreateSyncedWallet(*test.m_node.chain,
+        test.m_node.chainman->ActiveChain(), test.coinbaseKey);
+    {
+        LOCK(wallet->cs_wallet);
+        wallet->SetBroadcastTransactions(true);
+        CMutableTransaction valid;
+        valid.vin.emplace_back(COutPoint{test.m_coinbase_txns[0]->GetHash(), 0});
+        valid.vout.emplace_back(50 * COIN - 1000, GetScriptForRawPubKey(test.coinbaseKey.GetPubKey()));
+        QVERIFY(wallet->SignTransaction(valid));
+        CMutableTransaction invalid{valid};
+        invalid.vin[0].prevout = COutPoint{Txid{}, 0};
+        wallet::CWalletTx rejected{MakeTransactionRef(invalid), wallet::TxStateInactive{}};
+        std::string error;
+        QVERIFY(!wallet->SubmitTxMemoryPoolAndRelay(rejected, error, node::TxBroadcast::MEMPOOL_NO_BROADCAST));
+        QVERIFY(!error.empty());
+        QCOMPARE(rejected.m_last_broadcast_error, error);
+        wallet::CWalletTx accepted{MakeTransactionRef(valid), wallet::TxStateInactive{}};
+        accepted.m_last_broadcast_error = "previous failure";
+        std::string retry_error;
+        QVERIFY2(wallet->SubmitTxMemoryPoolAndRelay(accepted, retry_error, node::TxBroadcast::MEMPOOL_NO_BROADCAST), retry_error.c_str());
+        QVERIFY(accepted.m_last_broadcast_error.empty());
+        QVERIFY(accepted.InMempool());
+    }
+    interfaces::WalletTxStatus status{};
+    QVERIFY(RenewUtxos::transactionStatus(status).startsWith("Pending submission"));
+    status.last_broadcast_error = "bad-txns-inputs-missingorspent";
+    QVERIFY(RenewUtxos::transactionStatus(status).contains(QString::fromStdString(status.last_broadcast_error)));
+    status.is_in_mempool = true;
+    QVERIFY(RenewUtxos::transactionStatus(status).startsWith("Accepted by this node"));
+    status.is_in_mempool = false;
+    status.is_mempool_conflicted = true;
+    QVERIFY(RenewUtxos::transactionStatus(status).startsWith("Conflicted"));
+    status.is_mempool_conflicted = false;
+    status.depth_in_main_chain = -1;
+    QVERIFY(RenewUtxos::transactionStatus(status).startsWith("Conflicted"));
+    status.depth_in_main_chain = 0;
+    status.is_abandoned = true;
+    QVERIFY(RenewUtxos::transactionStatus(status).startsWith("Abandoned"));
+    status.is_abandoned = false;
+    status.depth_in_main_chain = 2;
+    status.block_height = 123;
+    QVERIFY(RenewUtxos::transactionStatus(status).contains("123 (2 confirmation(s))"));
+    // A reorg removes confirmation; a new successful submission supersedes
+    // an older rejection. Mempool absence alone never establishes rejection.
+    status.depth_in_main_chain = 0;
+    status.last_broadcast_error.clear();
+    QVERIFY(RenewUtxos::transactionStatus(status).startsWith("Pending submission"));
 }
