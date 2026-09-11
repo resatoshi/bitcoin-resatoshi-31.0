@@ -36,7 +36,7 @@ private:
     std::optional<Clock::time_point> m_last_recovery_retry;
 };
 
-/** One instance per GUI node, shared by all its wallet dashboards. */
+/** One instance per GUI node. All access must run on the owning GUI thread. */
 class BootstrapManager
 {
 public:
@@ -56,7 +56,6 @@ private:
     bool saveSettings();
     const bool m_persist;
     std::vector<std::string> m_recovery;
-    std::map<std::string, std::set<CService>> m_recovery_endpoints;
     void release();
     interfaces::Node& m_node;
     Connector m_connector;

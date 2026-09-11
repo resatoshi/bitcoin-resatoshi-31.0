@@ -51,18 +51,26 @@ ClientModel::ClientModel(interfaces::Node& node, OptionsModel *_optionsModel, QO
 
     banTableModel = new BanTableModel(m_node, this);
 
-    if (Params().GetChainType() == ChainType::MAIN) m_bootstrap = std::make_unique<BootstrapManager>(m_node);
-
-    QTimer* timer = new QTimer;
-    timer->setInterval(MODEL_UPDATE_DELAY);
-    connect(timer, &QTimer::timeout, [this] {
-        if (m_bootstrap) {
+    if (Params().GetChainType() == ChainType::MAIN) {
+        m_bootstrap = std::make_unique<BootstrapManager>(m_node);
+        // Recovery state belongs to the GUI thread, just like Save/Remove.
+        // Core still performs DNS and socket work on its connection threads.
+        auto* recovery_timer = new QTimer(this);
+        recovery_timer->setObjectName("bootstrapRecoveryTimer");
+        connect(recovery_timer, &QTimer::timeout, this, [this] {
+            if (!m_bootstrap) return;
             try {
                 m_bootstrap->poll();
             } catch (const std::exception&) {
                 // Retry a failed observation on the next poll.
             }
-        }
+        });
+        recovery_timer->start(1000);
+    }
+
+    QTimer* timer = new QTimer;
+    timer->setInterval(MODEL_UPDATE_DELAY);
+    connect(timer, &QTimer::timeout, [this] {
         // no locking required at this point
         // the following calls will acquire the required lock
         Q_EMIT mempoolSizeChanged(m_node.getMempoolSize(), m_node.getMempoolDynamicUsage(), m_node.getMempoolMaxUsage());

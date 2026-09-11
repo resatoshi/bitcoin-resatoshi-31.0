@@ -60,6 +60,7 @@
 #include <QObject>
 #include <QPushButton>
 #include <QTimer>
+#include <QThread>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <QTextEdit>
@@ -793,6 +794,13 @@ void WalletTests::bootstrapManagerTests()
     QVERIFY(queued_recovery);
     QCOMPARE(manager.recoveryStatus("helper.example.org:19333"), CConnman::OneTryStatus::CONNECTED);
     manager.poll(start + 222s);
+    QVERIFY(!connman.OneTryAddresses("helper.example.org:19333").empty());
+    connman.ExpireRecoveryAddresses("helper.example.org:19333");
+    QVERIFY(connman.OneTryAddresses("helper.example.org:19333").empty());
+    QCOMPARE(manager.recoveryStatus("helper.example.org:19333"), CConnman::OneTryStatus::CONNECTED);
+    // Expiry drops the IP snapshot, but the active bootstrap NodeId must
+    // remain excluded until that connection ends.
+
     // A failed try-lock observation must not erase the 120-second interval.
     std::latch locked{1}, unlock{1};
     std::thread busy{[&] {
@@ -824,19 +832,46 @@ void WalletTests::bootstrapManagerTests()
     QCOMPARE(removes, 2);
     QVERIFY(!regular1->fDisconnect && !regular3->fDisconnect && !regular4->fDisconnect);
     clear_peers();
-    add_peer(6, "4.2.2.2", "4.2.2.2:19333");
+    auto* reassigned = add_peer(6, "9.9.9.10", "9.9.9.10:19333");
+    add_peer(13, "8.8.8.8", "8.8.8.8:19333");
+    add_peer(14, "1.1.1.1", "1.1.1.1:19333");
     manager.poll(start + 464s);
+    manager.poll(start + 584s);
+    QVERIFY(!reassigned->fDisconnect);
     QCOMPARE(connects, 2);
     clear_peers();
     add_peer(11, "8.8.8.8", "inbound-remainder", ConnectionType::INBOUND);
-    manager.poll(start + 465s);
+    manager.poll(start + 585s);
     QTRY_COMPARE_WITH_TIMEOUT(connects, 4, 5000);
     m_node.setNetworkActive(false);
-    manager.poll(start + 526s);
+    manager.poll(start + 646s);
     QCOMPARE(connects, 4);
     m_node.setNetworkActive(true);
-    manager.poll(start + 527s);
+    manager.poll(start + 647s);
     QTRY_COMPARE_WITH_TIMEOUT(connects, 6, 5000);
+    // Repeated DNS answers replace the previous bounded snapshot. The
+    // existing 8.8.8.8 connection prevents any real socket attempt.
+    const std::string rotating{"rotating.example.org:19333"};
+    for (int subnet : {2, 3}) {
+        const auto saved_lookup = g_dns_lookup;
+        g_dns_lookup = [&](const std::string& host, bool allow_lookup) {
+            if (host != "rotating.example.org") return saved_lookup(host, allow_lookup);
+            std::vector<CNetAddr> answers{LookupNumeric("8.8.8.8", 19333)};
+            for (int i = 0; i < 255; ++i) answers.push_back(LookupNumeric(
+                "192.0." + std::to_string(subnet) + "." + std::to_string(i), 19333));
+            return answers;
+        };
+        const bool queued = connman.QueueOneTry(rotating);
+        if (queued) connman.ProcessRecoveryForTest();
+        g_dns_lookup = saved_lookup;
+        QVERIFY(queued);
+        const auto snapshot = connman.OneTryAddresses(rotating);
+        QCOMPARE(snapshot.size(), size_t{256});
+        QVERIFY(snapshot.contains(LookupNumeric("192.0." + std::to_string(subnet) + ".1", 19333)));
+        if (subnet == 3) QVERIFY(!snapshot.contains(LookupNumeric("192.0.2.1", 19333)));
+    }
+    connman.CancelOneTry(rotating);
+    QVERIFY(connman.OneTryAddresses(rotating).empty());
     // Core registration is nonblocking and manager destruction preserves
     // an entry explicitly supplied by the user.
     const std::string user_seed{"resatoshi-seed.freeddns.org:19333"};
@@ -1036,6 +1071,16 @@ void WalletTests::recoveryPeerTests()
         gui.initModelForWallet(m_node, gui_wallet, style.get());
         MinerDashboard dashboard(gui.walletModel.get(), style.get());
         dashboard.setClientModel(gui.clientModel.get());
+        auto* recovery_timer = gui.clientModel->findChild<QTimer*>("bootstrapRecoveryTimer");
+        QVERIFY(recovery_timer);
+        QCOMPARE(recovery_timer->thread(), QThread::currentThread());
+        // Deliver real timer events while the ClientModel worker also runs.
+        // Save/Remove and recovery polling must all execute on the GUI thread.
+        QSignalSpy recovery_ticks(recovery_timer, &QTimer::timeout);
+        QThread* callback_thread{nullptr};
+        const auto observed = QObject::connect(recovery_timer, &QTimer::timeout,
+            [&] { callback_thread = QThread::currentThread(); });
+        recovery_timer->start(1);
         auto* input = dashboard.findChild<QLineEdit*>("recoveryAddressInput");
         auto* table = dashboard.findChild<QTableWidget*>("recoveryTable");
         QVERIFY(input && table);
@@ -1050,6 +1095,17 @@ void WalletTests::recoveryPeerTests()
         dashboard.findChild<QPushButton*>("recoveryRemove")->click();
         QCOMPARE(table->rowCount(), 0);
         QCOMPARE(connman.RecoveryQueueSize(), size_t{0});
+        for (int i = 0; i < 10; ++i) {
+            input->setText("cycle.example.org");
+            dashboard.findChild<QPushButton*>("recoverySave")->click();
+            const int before = recovery_ticks.count();
+            QTRY_VERIFY_WITH_TIMEOUT(recovery_ticks.count() > before, 1000);
+            QCOMPARE(callback_thread, QThread::currentThread());
+            dashboard.findChild<QPushButton*>("recoveryRemove")->click();
+            QCOMPARE(table->rowCount(), 0);
+        }
+        QObject::disconnect(observed);
+        recovery_timer->stop();
     }
     if (previous.isValid()) settings.setValue("recoveryPeers/mainnet", previous);
     else settings.remove("recoveryPeers/mainnet");

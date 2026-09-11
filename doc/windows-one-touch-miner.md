@@ -162,7 +162,7 @@ The panel tracks renewals submitted during its current lifetime.
 Bulk selection (all eligible or near expiry) recomputes the selected total and
 fee estimate once after all checkboxes have been updated.
 
-## Emergency peer recovery (local 31.0.7)
+## Emergency peer recovery (local 31.0.8)
 
 If the built-in bootstrap servers are unavailable, a participant can keep a
 synchronized ReSatoshi miner/node running, allow inbound TCP 19333 through its
@@ -212,3 +212,10 @@ Reachability and getting three suitable peers depend on the helper, port
 forwarding and the available network; discovery is not guaranteed by entering
 an address. No consensus, difficulty, wallet format or historical block changes
 are part of this feature.
+
+Recovery settings and policy polling share the GUI thread; network resolution
+and connection attempts remain on Core threads. DDNS identity uses only the
+latest lookup (at most 256 endpoints), valid for 15 minutes. A new attempt
+replaces the snapshot. An already identified bootstrap connection remains
+excluded by NodeId until it ends, so expiring DNS records cannot promote it
+into the three replacement peers. Old IPs are not retained across handoff.

@@ -1806,7 +1806,13 @@ private:
      * List of reconnections we have to make.
      */
     std::list<ReconnectionInfo> m_reconnections GUARDED_BY(m_reconnections_mutex);
-    struct OneTryAttempt { uint64_t request{0}; OneTryStatus status{OneTryStatus::SAVED}; std::set<CService> addresses; };
+    struct OneTryAttempt {
+        uint64_t request{0};
+        OneTryStatus status{OneTryStatus::SAVED};
+        std::set<CService> addresses;
+        std::set<NodeId> peers;
+        std::chrono::steady_clock::time_point addresses_until{};
+    };
     std::map<std::string, OneTryAttempt> m_one_tries GUARDED_BY(m_reconnections_mutex);
     uint64_t m_one_try_sequence GUARDED_BY(m_reconnections_mutex){0};
 

@@ -155,7 +155,6 @@ bool BootstrapManager::removeAddress(const std::string& address)
     if (m_node.getNodesStats(stats)) for (const auto& item : stats) {
         if (std::get<0>(item).m_addr_name == address) m_node.disconnectById(std::get<0>(item).nodeid);
     }
-    m_recovery_endpoints.erase(address);
     return true;
 }
 
@@ -200,13 +199,16 @@ void BootstrapManager::poll(Clock::time_point now)
     for (const auto& item : stats) {
         if (m_node.isConnected(std::get<0>(item).nodeid) && !std::get<1>(item)) return;
     }
+    // Use only the current, bounded DNS snapshots. Active bootstrap NodeIds
+    // remain excluded even after DNS changes or the snapshot expires.
+    std::set<CService> recovery_endpoints;
     for (const auto& address : m_recovery) {
         const auto resolved_addresses = m_node.oneTryAddresses(address);
-        m_recovery_endpoints[address].insert(resolved_addresses.begin(), resolved_addresses.end());
+        recovery_endpoints.insert(resolved_addresses.begin(), resolved_addresses.end());
         auto numeric = LookupNumeric(address, 19333);
-        if (numeric.IsValid()) m_recovery_endpoints[address].insert(numeric);
+        if (numeric.IsValid()) recovery_endpoints.insert(numeric);
         for (const auto& item : stats) {
-            if (std::get<0>(item).m_addr_name == address) m_recovery_endpoints[address].insert(std::get<0>(item).addr);
+            if (std::get<0>(item).m_addr_name == address) recovery_endpoints.insert(std::get<0>(item).addr);
         }
     }
     size_t connected{0};
@@ -221,7 +223,7 @@ void BootstrapManager::poll(Clock::time_point now)
     for (const auto& item : stats) {
         const auto& peer{std::get<0>(item)};
         present.insert(peer.nodeid);
-        bool bootstrap{m_bootstrap_ids.contains(peer.nodeid) || std::any_of(m_recovery_endpoints.begin(), m_recovery_endpoints.end(), [&](const auto& entry) { return entry.second.contains(peer.addr); }) ||
+        bool bootstrap{m_bootstrap_ids.contains(peer.nodeid) || recovery_endpoints.contains(peer.addr) ||
                        std::find(m_recovery.begin(), m_recovery.end(), peer.m_addr_name) != m_recovery.end() ||
                        (peer.addr.GetPort() == Params().GetDefaultPort() && m_addresses.contains(peer.addr))};
         for (const auto& seed : seeds) {

@@ -51,6 +51,7 @@ struct ConnmanTestMsg : public CConnman {
     void DisconnectRecoveryForTest() { DisconnectNodes(); }
     size_t RecoveryQueueSize() { LOCK(m_reconnections_mutex); return m_reconnections.size(); }
     uint64_t RecoveryRequest(const std::string& name) { LOCK(m_reconnections_mutex); return m_one_tries.at(name).request; }
+    void ExpireRecoveryAddresses(const std::string& name) { LOCK(m_reconnections_mutex); m_one_tries.at(name).addresses_until = {}; }
     void ResetAddrCache();
     void ResetMaxOutboundCycle();
     /// Reset the internal state.

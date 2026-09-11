@@ -403,12 +403,30 @@ CNode* CConnman::ConnectNode(CAddress addrConnect,
     // Collection of addresses to try to connect to: either all dns resolved addresses if a domain name (pszDest) is provided, or addrConnect otherwise.
     std::vector<CAddress> connect_to{};
     if (pszDest) {
+        uint64_t recovery_request{0};
+        {
+            LOCK(m_reconnections_mutex);
+            if (auto it = m_one_tries.find(pszDest); it != m_one_tries.end()) recovery_request = it->second.request;
+        }
         std::vector<CService> resolved{Lookup(pszDest, default_port, fNameLookup && !HaveNameProxy(), 256)};
+        // Remember an already connected alias by NodeId, so expiration of
+        // DNS identity does not lose its Connected status or follow IP reuse.
+        std::set<NodeId> recovery_peers;
+        if (recovery_request != 0) {
+            LOCK(m_nodes_mutex);
+            for (const CNode* node : m_nodes) {
+                if (!node->fDisconnect && std::find(resolved.begin(), resolved.end(), node->addr) != resolved.end()) recovery_peers.insert(node->GetId());
+            }
+        }
         // Reuse the connection thread's resolution for GUI bootstrap identity.
         {
             LOCK(m_reconnections_mutex);
-            if (auto it = m_one_tries.find(pszDest); it != m_one_tries.end()) {
-                for (const auto& address : resolved) it->second.addresses.insert(address);
+            if (auto it = m_one_tries.find(pszDest); it != m_one_tries.end() && recovery_request != 0 && it->second.request == recovery_request) {
+                // Replace, rather than accumulate, up to 256 current answers.
+                // A cancelled/older lookup must not populate a newer request.
+                it->second.addresses = {resolved.begin(), resolved.end()};
+                it->second.peers = std::move(recovery_peers);
+                it->second.addresses_until = std::chrono::steady_clock::now() + std::chrono::minutes{15};
             }
         }
         // Only base seed names qualify, not service-filtered DNS peer lists.
@@ -4199,6 +4217,9 @@ bool CConnman::QueueOneTry(const std::string& destination)
     auto& attempt = m_one_tries[destination];
     attempt.request = request;
     attempt.status = OneTryStatus::CONNECTING;
+    attempt.addresses.clear();
+    attempt.peers.clear();
+    attempt.addresses_until = {};
     // One MANUAL attempt, equivalent to addnode address onetry false.
     // Legacy framing distinguishes a foreign network magic from a timeout.
     m_reconnections.push_back({.addr_connect = CAddress{}, .grant = {}, .destination = destination,
@@ -4211,16 +4232,22 @@ std::set<CService> CConnman::OneTryAddresses(const std::string& destination) con
 {
     LOCK(m_reconnections_mutex);
     auto it = m_one_tries.find(destination);
-    return it == m_one_tries.end() ? std::set<CService>{} : it->second.addresses;
+    return it == m_one_tries.end() || std::chrono::steady_clock::now() >= it->second.addresses_until
+        ? std::set<CService>{} : it->second.addresses;
 }
 
 CConnman::OneTryStatus CConnman::GetOneTryStatus(const std::string& destination) const
 {
     const auto addresses = OneTryAddresses(destination);
+    std::set<NodeId> peers;
+    {
+        LOCK(m_reconnections_mutex);
+        if (auto it = m_one_tries.find(destination); it != m_one_tries.end()) peers = it->second.peers;
+    }
     {
         LOCK(m_nodes_mutex);
         for (const CNode* node : m_nodes) {
-            if ((node->m_addr_name == destination || addresses.contains(node->addr)) && !node->fDisconnect && node->fSuccessfullyConnected) return OneTryStatus::CONNECTED;
+            if ((node->m_addr_name == destination || peers.contains(node->GetId()) || addresses.contains(node->addr)) && !node->fDisconnect && node->fSuccessfullyConnected) return OneTryStatus::CONNECTED;
         }
     }
     LOCK(m_reconnections_mutex);
