@@ -266,6 +266,7 @@ public:
     {
         TransportProtocolType transport_type;
         std::optional<uint256> session_id;
+        bool wrong_network{false};
     };
 
     /** Retrieve information about this transport. */
@@ -421,6 +422,7 @@ private:
     size_t m_bytes_sent GUARDED_BY(m_send_mutex) {0};
 
 public:
+    std::atomic<bool> m_wrong_network{false};
     explicit V1Transport(NodeId node_id) noexcept;
 
     bool ReceivedMessageComplete() const override EXCLUSIVE_LOCKS_REQUIRED(!m_recv_mutex)
@@ -716,6 +718,7 @@ public:
     // Bind address of our side of the connection
     const CService addrBind;
     const std::string m_addr_name;
+    uint64_t m_recovery_request{0};
     /** The pszDest argument provided to ConnectNode(). Only used for reconnections. */
     const std::string m_dest;
     //! Whether this peer is an inbound onion, i.e. connected via our Tor onion service.
@@ -1186,8 +1189,15 @@ public:
                                const char* pszDest,
                                ConnectionType conn_type,
                                bool use_v2transport,
-                               const std::optional<Proxy>& proxy_override = std::nullopt)
+                               const std::optional<Proxy>& proxy_override = std::nullopt,
+                               uint64_t recovery_request = 0)
         EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+
+    enum class OneTryStatus { SAVED, CONNECTING, CONNECTED, FAILED, WRONG_NETWORK };
+    bool QueueOneTry(const std::string& destination);
+    OneTryStatus GetOneTryStatus(const std::string& destination) const;
+    void CancelOneTry(const std::string& destination);
+    std::set<CService> OneTryAddresses(const std::string& destination) const;
 
     /// Group of private broadcast related members.
     class PrivateBroadcast
@@ -1779,7 +1789,7 @@ private:
     /**
      * Mutex protecting m_reconnections.
      */
-    Mutex m_reconnections_mutex;
+    mutable Mutex m_reconnections_mutex;
 
     /** Struct for entries in m_reconnections. */
     struct ReconnectionInfo
@@ -1789,12 +1799,16 @@ private:
         std::string destination;
         ConnectionType conn_type;
         bool use_v2transport;
+        uint64_t recovery_request{0};
     };
 
     /**
      * List of reconnections we have to make.
      */
     std::list<ReconnectionInfo> m_reconnections GUARDED_BY(m_reconnections_mutex);
+    struct OneTryAttempt { uint64_t request{0}; OneTryStatus status{OneTryStatus::SAVED}; std::set<CService> addresses; };
+    std::map<std::string, OneTryAttempt> m_one_tries GUARDED_BY(m_reconnections_mutex);
+    uint64_t m_one_try_sequence GUARDED_BY(m_reconnections_mutex){0};
 
     /** Attempt reconnections, if m_reconnections non-empty. */
     void PerformReconnections() EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex, !m_unused_i2p_sessions_mutex);

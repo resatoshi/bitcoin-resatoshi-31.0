@@ -405,6 +405,12 @@ CNode* CConnman::ConnectNode(CAddress addrConnect,
     if (pszDest) {
         std::vector<CService> resolved{Lookup(pszDest, default_port, fNameLookup && !HaveNameProxy(), 256)};
         // Reuse the connection thread's resolution for GUI bootstrap identity.
+        {
+            LOCK(m_reconnections_mutex);
+            if (auto it = m_one_tries.find(pszDest); it != m_one_tries.end()) {
+                for (const auto& address : resolved) it->second.addresses.insert(address);
+            }
+        }
         // Only base seed names qualify, not service-filtered DNS peer lists.
         std::string host;
         uint16_t port{default_port};
@@ -736,7 +742,7 @@ V1Transport::V1Transport(const NodeId node_id) noexcept
 
 Transport::Info V1Transport::GetInfo() const noexcept
 {
-    return {.transport_type = TransportProtocolType::V1, .session_id = {}};
+    return {.transport_type = TransportProtocolType::V1, .session_id = {}, .wrong_network = m_wrong_network.load()};
 }
 
 int V1Transport::readHeader(std::span<const uint8_t> msg_bytes)
@@ -764,6 +770,7 @@ int V1Transport::readHeader(std::span<const uint8_t> msg_bytes)
 
     // Check start string, network magic
     if (hdr.pchMessageStart != m_magic_bytes) {
+        m_wrong_network = hdr.GetMessageType() == NetMsgType::VERSION;
         LogDebug(BCLog::NET, "Header error: Wrong MessageStart %s received, peer=%d\n", HexStr(hdr.pchMessageStart), m_node_id);
         return -1;
     }
@@ -1928,6 +1935,7 @@ void CConnman::DisconnectNodes()
     // Use a temporary variable to accumulate desired reconnections, so we don't need
     // m_reconnections_mutex while holding m_nodes_mutex.
     decltype(m_reconnections) reconnections_to_add;
+    std::vector<std::tuple<std::string, uint64_t, OneTryStatus>> ended_attempts;
 
     {
         LOCK(m_nodes_mutex);
@@ -1949,6 +1957,8 @@ void CConnman::DisconnectNodes()
         {
             if (pnode->fDisconnect)
             {
+                ended_attempts.emplace_back(pnode->m_addr_name, pnode->m_recovery_request,
+                    pnode->m_transport->GetInfo().wrong_network ? OneTryStatus::WRONG_NETWORK : OneTryStatus::FAILED);
                 // remove from m_nodes
                 m_nodes.erase(remove(m_nodes.begin(), m_nodes.end(), pnode), m_nodes.end());
 
@@ -1995,6 +2005,9 @@ void CConnman::DisconnectNodes()
     {
         // Move entries from reconnections_to_add to m_reconnections.
         LOCK(m_reconnections_mutex);
+        for (const auto& [destination, request, status] : ended_attempts) {
+            if (auto it = m_one_tries.find(destination); it != m_one_tries.end() && it->second.request == request) it->second.status = status;
+        }
         m_reconnections.splice(m_reconnections.end(), std::move(reconnections_to_add));
     }
 }
@@ -2986,7 +2999,8 @@ void CConnman::ThreadOpenAddedConnections()
     AssertLockNotHeld(m_reconnections_mutex);
     while (true)
     {
-        CountingSemaphoreGrant<> grant(*semAddnode);
+        PerformReconnections();
+        CountingSemaphoreGrant<> grant(*semAddnode, /*fTry=*/true);
         std::vector<AddedNodeInfo> vInfo = GetAddedNodeInfo(/*include_connected=*/false);
         bool tried = false;
         for (const AddedNodeInfo& info : vInfo) {
@@ -3004,8 +3018,9 @@ void CConnman::ThreadOpenAddedConnections()
         // See if any reconnections are desired.
         PerformReconnections();
         // Retry every 60 seconds if a connection was attempted, otherwise two seconds
-        if (!m_interrupt_net->sleep_for(tried ? 60s : 2s)) {
-            return;
+        for (int i = 0; i < (tried ? 30 : 1); ++i) {
+            if (!m_interrupt_net->sleep_for(2s)) return;
+            PerformReconnections();
         }
     }
 }
@@ -3017,7 +3032,8 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect,
                                      const char* pszDest,
                                      ConnectionType conn_type,
                                      bool use_v2transport,
-                                     const std::optional<Proxy>& proxy_override)
+                                     const std::optional<Proxy>& proxy_override,
+                                     uint64_t recovery_request)
 {
     AssertLockNotHeld(m_unused_i2p_sessions_mutex);
     assert(conn_type != ConnectionType::INBOUND);
@@ -3045,6 +3061,7 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect,
     if (!pnode)
         return false;
     pnode->grantOutbound = std::move(grant_outbound);
+    pnode->m_recovery_request = recovery_request;
 
     m_msgproc->InitializeNode(*pnode, m_local_services);
     {
@@ -4171,6 +4188,53 @@ uint64_t CConnman::CalculateKeyedNetGroup(const CNetAddr& address) const
     return GetDeterministicRandomizer(RANDOMIZER_ID_NETGROUP).Write(vchNetGroup).Finalize();
 }
 
+bool CConnman::QueueOneTry(const std::string& destination)
+{
+    if (!GetNetworkActive() || destination.empty() || destination.size() > 300) return false;
+    LOCK(m_reconnections_mutex);
+    auto it = m_one_tries.find(destination);
+    if ((it == m_one_tries.end() && m_one_tries.size() >= 32) ||
+        (it != m_one_tries.end() && it->second.status == OneTryStatus::CONNECTING)) return false;
+    const auto request = ++m_one_try_sequence;
+    auto& attempt = m_one_tries[destination];
+    attempt.request = request;
+    attempt.status = OneTryStatus::CONNECTING;
+    // One MANUAL attempt, equivalent to addnode address onetry false.
+    // Legacy framing distinguishes a foreign network magic from a timeout.
+    m_reconnections.push_back({.addr_connect = CAddress{}, .grant = {}, .destination = destination,
+                              .conn_type = ConnectionType::MANUAL, .use_v2transport = false,
+                              .recovery_request = request});
+    return true;
+}
+
+std::set<CService> CConnman::OneTryAddresses(const std::string& destination) const
+{
+    LOCK(m_reconnections_mutex);
+    auto it = m_one_tries.find(destination);
+    return it == m_one_tries.end() ? std::set<CService>{} : it->second.addresses;
+}
+
+CConnman::OneTryStatus CConnman::GetOneTryStatus(const std::string& destination) const
+{
+    const auto addresses = OneTryAddresses(destination);
+    {
+        LOCK(m_nodes_mutex);
+        for (const CNode* node : m_nodes) {
+            if ((node->m_addr_name == destination || addresses.contains(node->addr)) && !node->fDisconnect && node->fSuccessfullyConnected) return OneTryStatus::CONNECTED;
+        }
+    }
+    LOCK(m_reconnections_mutex);
+    auto it = m_one_tries.find(destination);
+    return it == m_one_tries.end() ? OneTryStatus::SAVED : it->second.status;
+}
+
+void CConnman::CancelOneTry(const std::string& destination)
+{
+    LOCK(m_reconnections_mutex);
+    m_one_tries.erase(destination);
+    m_reconnections.remove_if([&](const auto& item) { return item.recovery_request && item.destination == destination; });
+}
+
 void CConnman::PerformReconnections()
 {
     AssertLockNotHeld(m_reconnections_mutex);
@@ -4185,7 +4249,12 @@ void CConnman::PerformReconnections()
         }
 
         auto& item = *todo.begin();
-        OpenNetworkConnection(item.addr_connect,
+        if (item.recovery_request) {
+            LOCK(m_reconnections_mutex);
+            auto it = m_one_tries.find(item.destination);
+            if (it == m_one_tries.end() || it->second.request != item.recovery_request) continue;
+        }
+        const bool opened = OpenNetworkConnection(item.addr_connect,
                               // We only reconnect if the first attempt to connect succeeded at
                               // connection time, but then failed after the CNode object was
                               // created. Since we already know connecting is possible, do not
@@ -4194,7 +4263,17 @@ void CConnman::PerformReconnections()
                               std::move(item.grant),
                               item.destination.empty() ? nullptr : item.destination.c_str(),
                               item.conn_type,
-                              item.use_v2transport);
+                              item.use_v2transport, std::nullopt, item.recovery_request);
+        if (item.recovery_request) {
+            bool cancelled;
+            {
+                LOCK(m_reconnections_mutex);
+                auto it = m_one_tries.find(item.destination);
+                cancelled = it == m_one_tries.end() || it->second.request != item.recovery_request;
+                if (!cancelled && !opened && it->second.status == OneTryStatus::CONNECTING) it->second.status = OneTryStatus::FAILED;
+            }
+            if (cancelled && opened) DisconnectNode(item.destination);
+        }
     }
 }
 

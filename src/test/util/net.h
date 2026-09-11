@@ -47,6 +47,10 @@ struct ConnmanTestMsg : public CConnman {
         m_peer_connect_timeout = timeout;
     }
 
+    void ProcessRecoveryForTest() { PerformReconnections(); }
+    void DisconnectRecoveryForTest() { DisconnectNodes(); }
+    size_t RecoveryQueueSize() { LOCK(m_reconnections_mutex); return m_reconnections.size(); }
+    uint64_t RecoveryRequest(const std::string& name) { LOCK(m_reconnections_mutex); return m_one_tries.at(name).request; }
     void ResetAddrCache();
     void ResetMaxOutboundCycle();
     /// Reset the internal state.

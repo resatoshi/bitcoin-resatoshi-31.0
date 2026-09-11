@@ -67,7 +67,7 @@ Uninstalling the program does not need to delete the wallet or chain data.
 Back up the wallet before deliberately removing the data directory.
 
 
-## CPU mining implementation (local 31.0.6 build)
+## CPU mining implementation (local 31.0.7 build)
 
 Workers use the local Core mining interface, reuse a block template for up to
 one second, and assign a unique coinbase extranonce to every template. Work is
@@ -91,7 +91,7 @@ above genesis. Normal block download and validation continue unchanged.
 The GUI manages bootstrap connections once per node, independently of the
 number of open wallets. After initial synchronization finishes, three
 non-bootstrap, handshake-complete automatic outbound peers advertising block
-services must each remain eligible for 60 seconds before bootstraps disconnect.
+services must each remain eligible for 120 seconds before bootstraps disconnect.
 They must have routable addresses in three distinct Core network groups (without
 an AS map). Inbound, manual, discovery-only, feeler and private-broadcast
 connections do not count. Distinct groups do not prove distinct operators. Each
@@ -161,3 +161,54 @@ The panel tracks renewals submitted during its current lifetime.
 
 Bulk selection (all eligible or near expiry) recomputes the selected total and
 fee estimate once after all checkboxes have been updated.
+
+## Emergency peer recovery (local 31.0.7)
+
+If the built-in bootstrap servers are unavailable, a participant can keep a
+synchronized ReSatoshi miner/node running, allow inbound TCP 19333 through its
+router and firewall, and share its public IP:19333 or DDNS:19333 in Discord.
+Other users enter that address under **Emergency peer recovery**, press
+**Save address**, select it and press **Connect once**. Saving alone does not
+immediately connect. This feature does not change router settings or publish
+any address automatically.
+
+Up to 32 unique addresses are stored in the GUI's node-wide settings, shared by
+all wallet dashboards and retained across restarts. IPv4, bracketed IPv6 and
+ASCII DDNS names are accepted; the default port is 19333. Scheme URLs, commands,
+credentials, malformed ports and duplicate normalized addresses are rejected.
+Addresses are settings, not wallet backup data.
+
+Each explicit connection uses Core's background connection machinery for one
+MANUAL attempt, equivalent to `addnode ADDRESS onetry false`. It does not add a
+permanent addnode or block the GUI on DNS/socket work. Legacy transport permits
+recognition of a received foreign VERSION header; normal discovered connections
+retain Core's own transport selection. Core requests peer addresses after the
+handshake and uses its existing addrman/outbound discovery to find other peers.
+
+- **Saved**: no active attempt (also after intentional handoff).
+- **Connecting**: queued, connecting, or waiting for protocol handshake.
+- **Connected**: handshake completed; this does not prove chain freshness.
+- **Failed**: resolution, connection or handshake failed, or the peer closed.
+- **Wrong network**: an actual foreign network magic was received in a VERSION
+  header. A peer that closes silently cannot be reliably classified and remains
+  Failed; timeouts are never guessed to be another network.
+
+Saved addresses retry only after zero handshake-complete peers have persisted
+for 60 seconds, at most once per 60 seconds while zero persists. One established
+peer resets that timer, including inbound peers. Connecting requests are not
+duplicated. Explicit **Connect once** does not wait for the automatic timer.
+Networking disable or explicit `-connect` pauses this recovery policy. The
+built-in bootstrap registration policy remains separate.
+
+After synchronization, three automatic outbound block peers in distinct
+routable network groups must each remain eligible for two minutes before the
+bootstrap connections are closed. Both built-in and user-supplied bootstrap
+names, numeric endpoints, and cached DDNS endpoints are excluded from the three.
+No independent peer is disconnected. The saved recovery list remains available;
+queued recovery attempts are cancelled on handoff or removal. A late completed
+cancelled attempt is closed instead of being left behind.
+
+Reachability and getting three suitable peers depend on the helper, port
+forwarding and the available network; discovery is not guaranteed by entering
+an address. No consensus, difficulty, wallet format or historical block changes
+are part of this feature.

@@ -16,6 +16,8 @@
 class ClientModel;
 class CpuMiner;
 class QLabel;
+class QLineEdit;
+class QTableWidget;
 class OverviewPage;
 class PlatformStyle;
 class QPushButton;
@@ -48,6 +50,7 @@ private Q_SLOTS:
     void toggleMining();
     void refreshStatus();
     void copyAddress();
+    void refreshRecovery();
 
 private:
     bool synchronized() const;
@@ -66,6 +69,11 @@ private:
     QLabel* m_indicator;
     QLabel* m_address;
     QLabel* m_security;
+    QLineEdit* m_recovery_input;
+    QTableWidget* m_recovery_table;
+    QPushButton* m_recovery_save;
+    QPushButton* m_recovery_connect;
+    QPushButton* m_recovery_remove;
     std::unique_ptr<CpuMiner> m_miner;
     std::vector<std::string> m_mining_addresses;
     uint64_t m_last_hashes{0};

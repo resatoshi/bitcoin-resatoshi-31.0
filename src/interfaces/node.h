@@ -163,6 +163,10 @@ public:
     //! Update Core's background connection list without waiting for DNS/connect.
     virtual bool addNode(const std::string& address) = 0;
     virtual bool removeAddedNode(const std::string& address) = 0;
+    virtual bool connectOneTry(const std::string& address) = 0;
+    virtual CConnman::OneTryStatus oneTryStatus(const std::string& address) = 0;
+    virtual void cancelOneTry(const std::string& address) = 0;
+    virtual std::set<CService> oneTryAddresses(const std::string& address) = 0;
 
     //! Return list of external signers (attached devices which can sign transactions).
     virtual std::vector<std::unique_ptr<ExternalSigner>> listExternalSigners() = 0;

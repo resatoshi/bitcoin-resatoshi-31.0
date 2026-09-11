@@ -28,6 +28,8 @@
 #include <qt/recentrequeststablemodel.h>
 #include <qt/renewutxos.h>
 #include <QSignalSpy>
+#include <QSettings>
+#include <QLineEdit>
 #include <qt/sendcoinsdialog.h>
 #include <qt/sendcoinsentry.h>
 #include <qt/transactiontablemodel.h>
@@ -44,6 +46,7 @@
 #include <core_io.h>
 
 #include <chrono>
+#include <cstring>
 #include <memory>
 #include <latch>
 #include <limits>
@@ -671,38 +674,33 @@ void WalletTests::cpuMinerHashTests()
 void WalletTests::bootstrapPolicyTests()
 {
     using namespace std::chrono_literals;
-    using Peer = BootstrapPolicy::Peer;
     BootstrapPolicy policy;
     const auto start = BootstrapPolicy::Clock::time_point{};
-    QVERIFY(policy.update(start, {}, true).reconnect);
-    QVERIFY(!policy.update(start + 59s, {}, true).reconnect);
-    QVERIFY(policy.update(start + 60s, {}, true).reconnect);
-    const std::vector<Peer> three{{1, true, true}, {2, false, true}, {3, false, true}};
-    QVERIFY(policy.update(start + 61s, three, true).disconnect.empty());
-    QVERIFY(policy.update(start + 200s, three, true).disconnect.empty()); // Bootstrap is not one of the three replacements.
-    auto four = three;
-    four.push_back({4, false, true});
-    QVERIFY(policy.update(start + 201s, four, true).disconnect.empty());
-    QVERIFY(policy.update(start + 260s, four, true).disconnect.empty());
-    auto action = policy.update(start + 261s, four, true);
-    QVERIFY(action.disconnect == std::vector<int64_t>{1});
-    QVERIFY(!action.reconnect);
-    four[3].id = 5; // A replacement connection must earn its own stable interval.
-    QVERIFY(policy.update(start + 262s, four, true).disconnect.empty());
-    QVERIFY(policy.update(start + 321s, four, true).disconnect.empty());
-    QVERIFY(policy.update(start + 322s, four, true).disconnect == std::vector<int64_t>{1});
-    four[3].ready = false;
-    QVERIFY(policy.update(start + 323s, four, true).disconnect.empty());
-    four[3].ready = true;
-    QVERIFY(policy.update(start + 324s, four, true).disconnect.empty());
-    QVERIFY(policy.update(start + 383s, four, true).disconnect.empty());
-    QVERIFY(policy.update(start + 384s, four, true).disconnect == std::vector<int64_t>{1});
-    four.push_back({6, true, true}); // Both bootstrap endpoints can be retired.
-    QVERIFY(policy.update(start + 385s, four, true).disconnect == (std::vector<int64_t>{1, 6}));
-    QVERIFY(!policy.update(start + 386s, {{2, false, true}}, true).reconnect);
-    QVERIFY(policy.update(start + 387s, {{7, false, false}}, true).reconnect); // Inbound-only connections cannot suppress recovery.
-    QVERIFY(!policy.update(start + 388s, {}, false).reconnect);
-    QVERIFY(policy.update(start + 389s, {}, true).reconnect);
+    QVERIFY(!policy.retryRecovery(start, 0, true));
+    QVERIFY(!policy.retryRecovery(start + 59s, 0, true));
+    QVERIFY(policy.retryRecovery(start + 60s, 0, true));
+    QVERIFY(!policy.retryRecovery(start + 119s, 0, true));
+    QVERIFY(!policy.retryRecovery(start + 120s, 1, true));
+    QVERIFY(!policy.retryRecovery(start + 121s, 0, true));
+    QVERIFY(!policy.retryRecovery(start + 180s, 0, true));
+    QVERIFY(policy.retryRecovery(start + 181s, 0, true));
+    QVERIFY(!policy.retryRecovery(start + 182s, 0, false));
+    QVERIFY(!policy.retryRecovery(start + 242s, 0, true));
+    QVERIFY(policy.retryRecovery(start + 302s, 0, true));
+    std::vector<BootstrapPolicy::Peer> peers{{1, true, true}, {2, false, true}, {3, false, true}};
+    QVERIFY(policy.update(start, peers, true).disconnect.empty());
+    QVERIFY(policy.update(start + 120s, peers, true).disconnect.empty());
+    peers.push_back({4, false, true});
+    QVERIFY(policy.update(start + 121s, peers, true).disconnect.empty());
+    QVERIFY(policy.update(start + 240s, peers, true).disconnect.empty());
+    QVERIFY(policy.update(start + 241s, peers, true).disconnect == std::vector<int64_t>{1});
+    peers[3].id = 5;
+    QVERIFY(policy.update(start + 242s, peers, true).disconnect.empty());
+    QVERIFY(policy.update(start + 361s, peers, true).disconnect.empty());
+    QVERIFY(policy.update(start + 362s, peers, true).disconnect == std::vector<int64_t>{1});
+    QVERIFY(policy.update(start + 363s, peers, true, false).disconnect.empty());
+    QVERIFY(policy.update(start + 364s, peers, false).disconnect.empty());
+    QVERIFY(policy.update(start + 365s, {{9, false, false}}, true).reconnect);
 }
 
 
@@ -731,7 +729,7 @@ void WalletTests::bootstrapManagerTests()
     };
     int connects{0}, removes{0};
     BootstrapManager manager{m_node,
-        [&](const std::string&, bool add) { if (add) ++connects; else ++removes; return true; }};
+        [&](const std::string&, bool add) { if (add) ++connects; else ++removes; return true; }, false};
     const auto start = BootstrapManager::Clock::time_point{};
     manager.poll(start);
     QCOMPARE(connects, 2);
@@ -776,15 +774,26 @@ void WalletTests::bootstrapManagerTests()
     add_peer(8, "4.2.2.2", "inbound-b", ConnectionType::INBOUND);
     add_peer(9, "208.67.222.222", "inbound-c", ConnectionType::INBOUND);
     manager.poll(start + 101s);
-    manager.poll(start + 161s);
+    manager.poll(start + 221s);
     // Three inbound peers and duplicate outbound network groups cannot retire
     // bootstrap. All addresses are synthetic test connections, without sockets.
     QVERIFY(!bootstrap_ip->fDisconnect);
     QCOMPARE(removes, 0);
     regular2->fDisconnect = true;
     regular2 = add_peer(10, "9.9.9.10", "independent-outbound");
-    manager.poll(start + 162s);
-    // A failed try-lock observation must not erase the 60-second interval.
+    QVERIFY(manager.saveAddress("helper.example.org:19333"));
+    const auto lookup_before_recovery = g_dns_lookup;
+    g_dns_lookup = [&](const std::string& host, bool allow_lookup) {
+        if (host == "helper.example.org" && allow_lookup) return std::vector<CNetAddr>{LookupNumeric("9.9.9.10", 19333)};
+        return lookup_before_recovery(host, allow_lookup);
+    };
+    const bool queued_recovery = manager.connectAddress("helper.example.org:19333");
+    if (queued_recovery) connman.ProcessRecoveryForTest();
+    g_dns_lookup = lookup_before_recovery;
+    QVERIFY(queued_recovery);
+    QCOMPARE(manager.recoveryStatus("helper.example.org:19333"), CConnman::OneTryStatus::CONNECTED);
+    manager.poll(start + 222s);
+    // A failed try-lock observation must not erase the 120-second interval.
     std::latch locked{1}, unlock{1};
     std::thread busy{[&] {
         LOCK(cs_main);
@@ -792,30 +801,41 @@ void WalletTests::bootstrapManagerTests()
         unlock.wait();
     }};
     locked.wait();
-    manager.poll(start + 191s);
+    manager.poll(start + 251s);
     unlock.count_down();
     busy.join();
-    manager.poll(start + 221s);
+    manager.poll(start + 341s);
     QVERIFY(!bootstrap_ip->fDisconnect);
     QVERIFY(!bootstrap_name->fDisconnect);
-    manager.poll(start + 222s);
+    manager.poll(start + 342s);
+    // The saved DDNS resolves to regular2: it is a bootstrap, not a third
+    // independent replacement, even when Core originally connected by IP.
+    QVERIFY(!bootstrap_ip->fDisconnect);
+    QVERIFY(!regular2->fDisconnect);
+    auto* regular4 = add_peer(12, "4.2.2.2", "4.2.2.2:19333");
+    manager.poll(start + 343s);
+    manager.poll(start + 462s);
+    QVERIFY(!bootstrap_ip->fDisconnect);
+    manager.poll(start + 463s);
+    QVERIFY(regular2->fDisconnect);
+    QVERIFY(!regular4->fDisconnect);
     QVERIFY(bootstrap_ip->fDisconnect);
     QVERIFY(bootstrap_name->fDisconnect);
     QCOMPARE(removes, 2);
-    QVERIFY(!regular1->fDisconnect && !regular2->fDisconnect && !regular3->fDisconnect);
+    QVERIFY(!regular1->fDisconnect && !regular3->fDisconnect && !regular4->fDisconnect);
     clear_peers();
     add_peer(6, "4.2.2.2", "4.2.2.2:19333");
-    manager.poll(start + 223s);
+    manager.poll(start + 464s);
     QCOMPARE(connects, 2);
     clear_peers();
     add_peer(11, "8.8.8.8", "inbound-remainder", ConnectionType::INBOUND);
-    manager.poll(start + 224s);
+    manager.poll(start + 465s);
     QTRY_COMPARE_WITH_TIMEOUT(connects, 4, 5000);
     m_node.setNetworkActive(false);
-    manager.poll(start + 285s);
+    manager.poll(start + 526s);
     QCOMPARE(connects, 4);
     m_node.setNetworkActive(true);
-    manager.poll(start + 286s);
+    manager.poll(start + 527s);
     QTRY_COMPARE_WITH_TIMEOUT(connects, 6, 5000);
     // Core registration is nonblocking and manager destruction preserves
     // an entry explicitly supplied by the user.
@@ -965,4 +985,112 @@ void WalletTests::renewalStatusTests()
     status.depth_in_main_chain = 0;
     status.last_broadcast_error.clear();
     QVERIFY(RenewUtxos::transactionStatus(status).startsWith("Pending submission"));
+}
+
+void WalletTests::recoveryPeerTests()
+{
+    using Status = CConnman::OneTryStatus;
+    using namespace std::chrono_literals;
+    QCOMPARE(*BootstrapManager::normalizeAddress(" 8.8.8.8 "), std::string{"8.8.8.8:19333"});
+    QCOMPARE(*BootstrapManager::normalizeAddress("SEED.Example.org.:19333"), std::string{"seed.example.org:19333"});
+    QCOMPARE(*BootstrapManager::normalizeAddress("[2001:4860:4860::8888]:19333"), std::string{"[2001:4860:4860::8888]:19333"});
+    for (const auto& bad : {"", "http://seed.example.org:19333", "x@y.org", "a b.org", "seed.example.org:0", "seed.example.org:65536", "999.999.999.999", "-bad.example.org", "seed.example.org/path"}) QVERIFY(!BootstrapManager::normalizeAddress(bad));
+    TestingSetup test{ChainType::MAIN};
+    m_node.setContext(&test.m_node);
+    auto& connman = static_cast<ConnmanTestMsg&>(*test.m_node.connman);
+    QSettings settings;
+    const auto previous = settings.value("recoveryPeers/mainnet");
+    settings.remove("recoveryPeers/mainnet");
+    {
+        BootstrapManager manager{m_node, [](const std::string&, bool) { return true; }};
+        QVERIFY(manager.saveAddress("seed.example.org"));
+        QVERIFY(manager.saveAddress("8.8.8.8:19333"));
+        QVERIFY(!manager.saveAddress("SEED.EXAMPLE.ORG.:19333"));
+        const auto start = BootstrapManager::Clock::time_point{};
+        manager.poll(start);
+        manager.poll(start + 59s);
+        QCOMPARE(connman.RecoveryQueueSize(), size_t{0});
+        manager.poll(start + 60s);
+        QCOMPARE(connman.RecoveryQueueSize(), size_t{2});
+        QCOMPARE(manager.recoveryStatus("seed.example.org:19333"), Status::CONNECTING);
+        QVERIFY(manager.connectAddress("seed.example.org:19333"));
+        QCOMPARE(connman.RecoveryQueueSize(), size_t{2});
+        manager.removeAddress("8.8.8.8:19333");
+        QCOMPARE(connman.RecoveryQueueSize(), size_t{1});
+    }
+    QCOMPARE(connman.RecoveryQueueSize(), size_t{0});
+    {
+        BootstrapManager manager{m_node, [](const std::string&, bool) { return true; }};
+        QCOMPARE(manager.recoveryAddresses(), (std::vector<std::string>{"seed.example.org:19333"}));
+        manager.removeAddress("seed.example.org:19333");
+    }
+    {
+        auto wallet_loader = interfaces::MakeWalletLoader(*test.m_node.chain, *Assert(test.m_node.args));
+        test.m_node.wallet_loader = wallet_loader.get();
+        CKey key;
+        key.MakeNewKey(true);
+        std::shared_ptr<CWallet> gui_wallet{wallet::CreateSyncedWallet(*test.m_node.chain,
+            test.m_node.chainman->ActiveChain(), key)};
+        std::unique_ptr<const PlatformStyle> style(PlatformStyle::instantiate("other"));
+        MiniGUI gui(m_node, style.get());
+        gui.initModelForWallet(m_node, gui_wallet, style.get());
+        MinerDashboard dashboard(gui.walletModel.get(), style.get());
+        dashboard.setClientModel(gui.clientModel.get());
+        auto* input = dashboard.findChild<QLineEdit*>("recoveryAddressInput");
+        auto* table = dashboard.findChild<QTableWidget*>("recoveryTable");
+        QVERIFY(input && table);
+        input->setText("ui.example.org");
+        dashboard.findChild<QPushButton*>("recoverySave")->click();
+        QCOMPARE(table->rowCount(), 1);
+        QCOMPARE(table->item(0, 0)->text(), QString{"ui.example.org:19333"});
+        QCOMPARE(table->item(0, 1)->text(), QString{"Saved"});
+        dashboard.findChild<QPushButton*>("recoveryConnect")->click();
+        QCOMPARE(table->item(0, 1)->text(), QString{"Connecting"});
+        QCOMPARE(connman.RecoveryQueueSize(), size_t{1});
+        dashboard.findChild<QPushButton*>("recoveryRemove")->click();
+        QCOMPARE(table->rowCount(), 0);
+        QCOMPARE(connman.RecoveryQueueSize(), size_t{0});
+    }
+    if (previous.isValid()) settings.setValue("recoveryPeers/mainnet", previous);
+    else settings.remove("recoveryPeers/mainnet");
+    // Resolver fails locally: exactly one attempt and no permanent addnode.
+    const auto original_lookup = g_dns_lookup;
+    g_dns_lookup = [](const std::string&, bool) { return std::vector<CNetAddr>{}; };
+    const bool queued_failure = connman.QueueOneTry("unreachable.example.org:19333");
+    if (queued_failure) connman.ProcessRecoveryForTest();
+    g_dns_lookup = original_lookup;
+    QVERIFY(queued_failure);
+    QCOMPARE(connman.GetOneTryStatus("unreachable.example.org:19333"), Status::FAILED);
+    QCOMPARE(connman.RecoveryQueueSize(), size_t{0});
+    QVERIFY(connman.GetAddedNodeInfo(true).empty());
+    connman.CancelOneTry("unreachable.example.org:19333");
+    // Feed a foreign VERSION header through the real transport, then retain
+    // its terminal reason after the socket/node has been removed.
+    const std::string name{"wrong.example.org:19333"};
+    QVERIFY(connman.QueueOneTry(name));
+    auto* peer = new CNode{10, nullptr, CAddress{}, 0, 0, CService{}, name,
+                          ConnectionType::MANUAL, false, 0};
+    peer->m_recovery_request = connman.RecoveryRequest(name);
+    peer->AddRef();
+    {
+        LOCK(NetEventsInterface::g_msgproc_mutex);
+        connman.Handshake(*peer, true, ServiceFlags(NODE_NETWORK | NODE_WITNESS),
+                          ServiceFlags(NODE_NETWORK | NODE_WITNESS), PROTOCOL_VERSION, true);
+    }
+    connman.AddTestNode(*peer);
+    QCOMPARE(connman.GetOneTryStatus(name), Status::CONNECTED);
+    DataStream encoded;
+    auto magic = Params().MessageStart();
+    magic[0] ^= 1;
+    encoded << CMessageHeader{magic, "version", 0};
+    std::vector<uint8_t> wire(encoded.size());
+    std::memcpy(wire.data(), encoded.data(), encoded.size());
+    std::span<const uint8_t> input{wire};
+    QVERIFY(!peer->m_transport->ReceivedBytes(input));
+    peer->fDisconnect = true;
+    connman.DisconnectRecoveryForTest();
+    QCOMPARE(connman.GetOneTryStatus(name), Status::WRONG_NETWORK);
+    connman.CancelOneTry(name);
+    QCOMPARE(connman.GetOneTryStatus(name), Status::SAVED);
+    QCOMPARE(connman.RecoveryQueueSize(), size_t{0});
 }

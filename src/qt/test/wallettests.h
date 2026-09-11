@@ -26,6 +26,7 @@ private Q_SLOTS:
     void cpuMinerTests();
     void bootstrapPolicyTests();
     void bootstrapManagerTests();
+    void recoveryPeerTests();
     void cpuMinerHashTests();
     void cpuMinerMainnetTests();
     void cpuMinerOldTipTests();

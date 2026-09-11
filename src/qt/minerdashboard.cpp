@@ -5,6 +5,7 @@
 #include <qt/minerdashboard.h>
 
 #include <qt/clientmodel.h>
+#include <qt/bootstrapmanager.h>
 #include <qt/cpuminer.h>
 #include <qt/guiutil.h>
 #include <qt/overviewpage.h>
@@ -25,9 +26,13 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -92,7 +97,69 @@ MinerDashboard::MinerDashboard(WalletModel* wallet_model, const PlatformStyle* p
     wallet_layout->addWidget(restore);
     wallet_layout->addWidget(new QLabel(tr("Keep the passphrase and backup offline. Nobody can recover a lost passphrase.")));
 
+    auto* recovery_box = new QGroupBox(tr("Emergency peer recovery"));
+    recovery_box->setObjectName("recoveryPanel");
+    auto* recovery_layout = new QVBoxLayout(recovery_box);
+    auto* recovery_help = new QLabel(tr("Enter an IP or DDNS shared by a synchronized ReSatoshi peer. The peer must accept TCP 19333."));
+    recovery_help->setWordWrap(true);
+    recovery_layout->addWidget(recovery_help);
+    m_recovery_input = new QLineEdit;
+    m_recovery_input->setObjectName("recoveryAddressInput");
+    m_recovery_input->setPlaceholderText(tr("IP:19333 or DDNS:19333"));
+    m_recovery_input->setMaxLength(300);
+    recovery_layout->addWidget(m_recovery_input);
+    m_recovery_save = new QPushButton(tr("Save address"));
+    m_recovery_save->setObjectName("recoverySave");
+    recovery_layout->addWidget(m_recovery_save);
+    m_recovery_table = new QTableWidget(0, 2);
+    m_recovery_table->setObjectName("recoveryTable");
+    m_recovery_table->setHorizontalHeaderLabels({tr("Address"), tr("Status")});
+    m_recovery_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_recovery_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_recovery_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_recovery_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_recovery_table->setMaximumHeight(150);
+    recovery_layout->addWidget(m_recovery_table);
+    auto* recovery_buttons = new QHBoxLayout;
+    m_recovery_connect = new QPushButton(tr("Connect once"));
+    m_recovery_connect->setObjectName("recoveryConnect");
+    m_recovery_remove = new QPushButton(tr("Remove"));
+    m_recovery_remove->setObjectName("recoveryRemove");
+    recovery_buttons->addWidget(m_recovery_connect);
+    recovery_buttons->addWidget(m_recovery_remove);
+    recovery_layout->addLayout(recovery_buttons);
+    auto* recovery_policy = new QLabel(tr("Saved addresses retry after 60 seconds with no connected peers. Temporary bootstrap connections close after 3 ordinary peers stay stable for 2 minutes."));
+    recovery_policy->setWordWrap(true);
+    recovery_layout->addWidget(recovery_policy);
+    const auto selected_address = [this] {
+        const int row = m_recovery_table->currentRow();
+        return row < 0 ? std::string{} : m_recovery_table->item(row, 0)->text().toStdString();
+    };
+    connect(m_recovery_save, &QPushButton::clicked, this, [this] {
+        if (!m_client_model || !m_client_model->bootstrapManager()) return;
+        if (!m_client_model->bootstrapManager()->saveAddress(m_recovery_input->text().toStdString())) {
+            QMessageBox::warning(this, tr("Recovery address"), tr("Enter a valid IP or DDNS address and port. Duplicate addresses are not added; at most 32 addresses can be saved. Also check that settings storage is writable."));
+            return;
+        }
+        m_recovery_input->clear();
+        refreshRecovery();
+        m_recovery_table->selectRow(m_recovery_table->rowCount() - 1);
+    });
+    connect(m_recovery_connect, &QPushButton::clicked, this, [this, selected_address] {
+        if (m_client_model && m_client_model->bootstrapManager()) {
+            if (!m_client_model->bootstrapManager()->connectAddress(selected_address())) QMessageBox::warning(this, tr("Recovery connection"), tr("Connection could not be queued. Check that networking is enabled and no connection-only configuration is active."));
+            refreshRecovery();
+        }
+    });
+    connect(m_recovery_remove, &QPushButton::clicked, this, [this, selected_address] {
+        if (m_client_model && m_client_model->bootstrapManager()) {
+            if (!m_client_model->bootstrapManager()->removeAddress(selected_address())) QMessageBox::warning(this, tr("Recovery address"), tr("Could not save the recovery list. Check that settings storage is writable."));
+            refreshRecovery();
+        }
+    });
+    connect(m_recovery_table, &QTableWidget::itemSelectionChanged, this, &MinerDashboard::refreshRecovery);
     controls->addWidget(node_box);
+    controls->addWidget(recovery_box);
     controls->addWidget(wallet_box);
     controls->addStretch();
     auto* left = new QWidget;
@@ -121,7 +188,11 @@ MinerDashboard::MinerDashboard(WalletModel* wallet_model, const PlatformStyle* p
     send_scroll->setWidget(m_send);
     send_scroll->setMinimumWidth(390);
 
-    root->addWidget(left, 0);
+    auto* left_scroll = new QScrollArea;
+    left_scroll->setWidgetResizable(true);
+    left_scroll->setWidget(left);
+    left_scroll->setMinimumWidth(310);
+    root->addWidget(left_scroll, 0);
     root->addWidget(center, 1);
     root->addWidget(send_scroll, 1);
 
@@ -215,6 +286,7 @@ void MinerDashboard::toggleMining()
 
 void MinerDashboard::refreshStatus()
 {
+    refreshRecovery();
     const int blocks = m_client_model ? m_client_model->getNumBlocks() : 0;
     const int headers = m_client_model ? m_client_model->getHeaderTipHeight() : 0;
     const int peers = m_client_model ? m_client_model->getNumConnections() : 0;
@@ -263,4 +335,38 @@ void MinerDashboard::refreshStatus()
 void MinerDashboard::copyAddress()
 {
     QApplication::clipboard()->setText(m_address->text());
+}
+
+void MinerDashboard::refreshRecovery()
+{
+    auto* manager = m_client_model ? m_client_model->bootstrapManager() : nullptr;
+    m_recovery_save->setEnabled(manager != nullptr);
+    m_recovery_input->setEnabled(manager != nullptr);
+    const auto selected = m_recovery_table->currentRow() >= 0 ? m_recovery_table->item(m_recovery_table->currentRow(), 0)->text() : QString{};
+    const QSignalBlocker blocker{m_recovery_table};
+    const std::vector<std::string> empty;
+    const auto& addresses = manager ? manager->recoveryAddresses() : empty;
+    m_recovery_table->setRowCount(static_cast<int>(addresses.size()));
+    for (int row = 0; row < static_cast<int>(addresses.size()); ++row) {
+        const QString address = QString::fromStdString(addresses[row]);
+        if (!m_recovery_table->item(row, 0)) m_recovery_table->setItem(row, 0, new QTableWidgetItem);
+        m_recovery_table->item(row, 0)->setText(address);
+        QString status;
+        switch (manager->recoveryStatus(addresses[row])) {
+        case CConnman::OneTryStatus::SAVED: status = tr("Saved"); break;
+        case CConnman::OneTryStatus::CONNECTING: status = tr("Connecting"); break;
+        case CConnman::OneTryStatus::CONNECTED: status = tr("Connected"); break;
+        case CConnman::OneTryStatus::FAILED: status = tr("Failed"); break;
+        case CConnman::OneTryStatus::WRONG_NETWORK: status = tr("Wrong network"); break;
+        }
+        if (!m_recovery_table->item(row, 1)) m_recovery_table->setItem(row, 1, new QTableWidgetItem);
+        m_recovery_table->item(row, 1)->setText(status);
+        if (address == selected) m_recovery_table->selectRow(row);
+    }
+    const int row = m_recovery_table->currentRow();
+    const bool valid = manager && row >= 0 && row < static_cast<int>(addresses.size());
+    m_recovery_remove->setEnabled(valid);
+    m_recovery_connect->setEnabled(valid && m_client_model->node().getNetworkActive() &&
+        manager->recoveryStatus(addresses[row]) != CConnman::OneTryStatus::CONNECTING &&
+        manager->recoveryStatus(addresses[row]) != CConnman::OneTryStatus::CONNECTED);
 }

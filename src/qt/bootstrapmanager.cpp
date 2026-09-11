@@ -12,6 +12,11 @@
 #include <net_processing.h>
 #include <netbase.h>
 #include <netgroup.h>
+#include <util/strencodings.h>
+
+#include <QRegularExpression>
+#include <QSettings>
+#include <QStringList>
 
 #include <algorithm>
 #include <exception>
@@ -46,7 +51,7 @@ BootstrapPolicy::Action BootstrapPolicy::update(Clock::time_point now, const std
     std::erase_if(m_ready_since, [&](const auto& entry) { return !ready.contains(entry.first); });
     size_t stable{0};
     for (const auto& [id, since] : m_ready_since) {
-        if (now - since >= std::chrono::seconds{60}) ++stable;
+        if (now - since >= std::chrono::seconds{120}) ++stable;
     }
     if (stable >= 3) {
         action.release = true;
@@ -57,17 +62,25 @@ BootstrapPolicy::Action BootstrapPolicy::update(Clock::time_point now, const std
     return action;
 }
 
-BootstrapManager::BootstrapManager(interfaces::Node& node, Connector connector)
-    : m_node(node), m_connector(std::move(connector))
+BootstrapManager::BootstrapManager(interfaces::Node& node, Connector connector, bool persist)
+    : m_persist(persist), m_node(node), m_connector(std::move(connector))
 {
     if (!m_connector) m_connector = [&node](const std::string& name, bool add) {
         // Core owns DNS, sockets and retries. Only its connection list changes.
         return add ? node.addNode(name) : node.removeAddedNode(name);
     };
+    if (m_persist) {
+        const auto saved = QSettings{}.value("recoveryPeers/mainnet").toStringList();
+        for (const auto& address : saved) {
+            auto normalized = normalizeAddress(address.toStdString());
+            if (normalized && m_recovery.size() < 32 && std::find(m_recovery.begin(), m_recovery.end(), *normalized) == m_recovery.end()) m_recovery.push_back(*normalized);
+        }
+    }
 }
 
 BootstrapManager::~BootstrapManager()
 {
+    for (const auto& address : m_recovery) m_node.cancelOneTry(address);
     release();
 }
 
@@ -80,6 +93,85 @@ void BootstrapManager::release()
     m_owned_seeds.clear();
 }
 
+bool BootstrapPolicy::retryRecovery(Clock::time_point now, size_t connected, bool enabled)
+{
+    if (!enabled || connected != 0) {
+        m_zero_since.reset();
+        m_last_recovery_retry.reset();
+        return false;
+    }
+    if (!m_zero_since) m_zero_since = now;
+    if (now - *m_zero_since < std::chrono::seconds{60} ||
+        (m_last_recovery_retry && now - *m_last_recovery_retry < std::chrono::seconds{60})) return false;
+    m_last_recovery_retry = now;
+    return true;
+}
+
+std::optional<std::string> BootstrapManager::normalizeAddress(const std::string& input)
+{
+    const QString text = QString::fromStdString(input).trimmed();
+    if (text.isEmpty() || text.size() > 300 || text.contains(QRegularExpression{"[\\s/@?#%]"}) || text.contains("://")) return {};
+    uint16_t port{19333};
+    std::string host;
+    if (!SplitHostPort(text.toStdString(), port, host) || port == 0 || host.empty()) return {};
+    const auto numeric = LookupNumeric(host, port);
+    if (numeric.IsValid()) return numeric.ToStringAddrPort();
+    QString domain = QString::fromStdString(host).toLower();
+    if (domain.endsWith('.')) domain.chop(1);
+    if (domain.size() > 253 || !domain.contains('.') || !domain.contains(QRegularExpression{"[a-z]"})) return {};
+    for (const auto& label : domain.split('.')) {
+        if (!QRegularExpression{"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"}.match(label).hasMatch()) return {};
+    }
+    return domain.toStdString() + ":" + std::to_string(port);
+}
+
+bool BootstrapManager::saveSettings()
+{
+    if (!m_persist) return true;
+    QStringList saved;
+    for (const auto& address : m_recovery) saved.push_back(QString::fromStdString(address));
+    QSettings settings;
+    settings.setValue("recoveryPeers/mainnet", saved);
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
+bool BootstrapManager::saveAddress(const std::string& input)
+{
+    auto address = normalizeAddress(input);
+    if (!address || m_recovery.size() >= 32 || std::find(m_recovery.begin(), m_recovery.end(), *address) != m_recovery.end()) return false;
+    m_recovery.push_back(*address);
+    if (!saveSettings()) { m_recovery.pop_back(); return false; }
+    return true;
+}
+
+bool BootstrapManager::removeAddress(const std::string& address)
+{
+    const auto previous = m_recovery;
+    std::erase(m_recovery, address);
+    if (!saveSettings()) { m_recovery = previous; return false; }
+    m_node.cancelOneTry(address);
+    interfaces::Node::NodesStats stats;
+    if (m_node.getNodesStats(stats)) for (const auto& item : stats) {
+        if (std::get<0>(item).m_addr_name == address) m_node.disconnectById(std::get<0>(item).nodeid);
+    }
+    m_recovery_endpoints.erase(address);
+    return true;
+}
+
+bool BootstrapManager::connectAddress(const std::string& address)
+{
+    if (!m_node.getNetworkActive() || gArgs.IsArgSet("-connect") || std::find(m_recovery.begin(), m_recovery.end(), address) == m_recovery.end()) return false;
+    const auto status = m_node.oneTryStatus(address);
+    if (status == CConnman::OneTryStatus::CONNECTED || status == CConnman::OneTryStatus::CONNECTING) return true;
+    return m_node.connectOneTry(address);
+}
+
+CConnman::OneTryStatus BootstrapManager::recoveryStatus(const std::string& address) const
+{
+    return m_node.oneTryStatus(address);
+}
+
 void BootstrapManager::poll(Clock::time_point now)
 {
     if (now < m_next_poll) return;
@@ -89,6 +181,8 @@ void BootstrapManager::poll(Clock::time_point now)
     // Explicit connection-only configurations take precedence over discovery.
     if (!active || gArgs.IsArgSet("-connect")) {
         m_policy.update(now, {}, false);
+        m_policy.retryRecovery(now, 0, false);
+        for (const auto& address : m_recovery) m_node.cancelOneTry(address);
         release();
         m_started = false;
         return;
@@ -106,6 +200,20 @@ void BootstrapManager::poll(Clock::time_point now)
     for (const auto& item : stats) {
         if (m_node.isConnected(std::get<0>(item).nodeid) && !std::get<1>(item)) return;
     }
+    for (const auto& address : m_recovery) {
+        const auto resolved_addresses = m_node.oneTryAddresses(address);
+        m_recovery_endpoints[address].insert(resolved_addresses.begin(), resolved_addresses.end());
+        auto numeric = LookupNumeric(address, 19333);
+        if (numeric.IsValid()) m_recovery_endpoints[address].insert(numeric);
+        for (const auto& item : stats) {
+            if (std::get<0>(item).m_addr_name == address) m_recovery_endpoints[address].insert(std::get<0>(item).addr);
+        }
+    }
+    size_t connected{0};
+    for (const auto& item : stats) if (m_node.isConnected(std::get<0>(item).nodeid)) ++connected;
+    if (m_policy.retryRecovery(now, connected, active)) {
+        for (const auto& address : m_recovery) connectAddress(address);
+    }
     std::vector<BootstrapPolicy::Peer> peers;
     std::set<int64_t> present;
     const auto groups = NetGroupManager::NoAsmap();
@@ -113,7 +221,8 @@ void BootstrapManager::poll(Clock::time_point now)
     for (const auto& item : stats) {
         const auto& peer{std::get<0>(item)};
         present.insert(peer.nodeid);
-        bool bootstrap{m_bootstrap_ids.contains(peer.nodeid) ||
+        bool bootstrap{m_bootstrap_ids.contains(peer.nodeid) || std::any_of(m_recovery_endpoints.begin(), m_recovery_endpoints.end(), [&](const auto& entry) { return entry.second.contains(peer.addr); }) ||
+                       std::find(m_recovery.begin(), m_recovery.end(), peer.m_addr_name) != m_recovery.end() ||
                        (peer.addr.GetPort() == Params().GetDefaultPort() && m_addresses.contains(peer.addr))};
         for (const auto& seed : seeds) {
             auto dotted{seed};
@@ -127,7 +236,7 @@ void BootstrapManager::poll(Clock::time_point now)
                           peer.m_conn_type == ConnectionType::BLOCK_RELAY};
         const bool serves_blocks{std::get<1>(item) &&
             (std::get<2>(item).their_services & (NODE_NETWORK | NODE_NETWORK_LIMITED)) != 0};
-        const bool ready{resolved && !bootstrap && useful && serves_blocks &&
+        const bool ready{(resolved || !m_recovery.empty()) && !bootstrap && useful && serves_blocks &&
             m_node.isConnected(peer.nodeid) && peer.addr.IsRoutable() &&
             ready_groups.insert(groups.GetGroup(peer.addr)).second};
         peers.push_back({peer.nodeid, bootstrap, ready});
@@ -138,7 +247,10 @@ void BootstrapManager::poll(Clock::time_point now)
     const bool synchronized{!m_node.isLoadingBlocks() && !m_node.isInitialBlockDownload() &&
         m_node.getHeaderTip(headers, header_time) && headers <= m_node.getNumBlocks()};
     const auto action{m_policy.update(now, peers, active, synchronized)};
-    if (action.release) release();
+    if (action.release) {
+        release();
+        for (const auto& address : m_recovery) m_node.cancelOneTry(address);
+    }
     for (const auto id : action.disconnect) {
         size_t remaining{0};
         for (const auto& peer : peers) {

@@ -320,6 +320,11 @@ public:
     {
         return m_context->connman && m_context->connman->RemoveAddedNode(address);
     }
+    std::set<CService> oneTryAddresses(const std::string& address) override { return m_context->connman ? m_context->connman->OneTryAddresses(address) : std::set<CService>{}; }
+    bool connectOneTry(const std::string& address) override { return m_context->connman && m_context->connman->QueueOneTry(address); }
+    CConnman::OneTryStatus oneTryStatus(const std::string& address) override { return m_context->connman ? m_context->connman->GetOneTryStatus(address) : CConnman::OneTryStatus::FAILED; }
+    void cancelOneTry(const std::string& address) override { if (m_context->connman) m_context->connman->CancelOneTry(address); }
+
     std::vector<std::unique_ptr<interfaces::ExternalSigner>> listExternalSigners() override
     {
 #ifdef ENABLE_EXTERNAL_SIGNER

@@ -83,6 +83,8 @@ public:
     //! Return warnings to be displayed in status bar
     QString getStatusBarWarnings() const;
 
+    BootstrapManager* bootstrapManager() const { return m_bootstrap.get(); }
+
     QString formatFullVersion() const;
     QString formatSubVersion() const;
     bool isReleaseVersion() const;
