@@ -4266,13 +4266,22 @@ void CConnman::PerformReconnections()
 {
     AssertLockNotHeld(m_reconnections_mutex);
     AssertLockNotHeld(m_unused_i2p_sessions_mutex);
+    bool recovery_attempted{false};
     while (true) {
-        // Move first element of m_reconnections to todo (avoiding an allocation inside the lock).
+        // Move one pending connection to todo without allocating inside the lock.
         decltype(m_reconnections) todo;
         {
             LOCK(m_reconnections_mutex);
             if (m_reconnections.empty()) break;
-            todo.splice(todo.end(), m_reconnections, m_reconnections.begin());
+            // Keep Core transport fallbacks ahead of optional recovery work.
+            // Yield to ordinary outbound/addnode work after one recovery attempt.
+            auto next = std::find_if(m_reconnections.begin(), m_reconnections.end(),
+                [](const auto& pending) { return pending.recovery_request == 0; });
+            if (next == m_reconnections.end()) {
+                if (recovery_attempted) break;
+                next = m_reconnections.begin();
+            }
+            todo.splice(todo.end(), m_reconnections, next);
         }
 
         auto& item = *todo.begin();
@@ -4280,6 +4289,7 @@ void CConnman::PerformReconnections()
             LOCK(m_reconnections_mutex);
             auto it = m_one_tries.find(item.destination);
             if (it == m_one_tries.end() || it->second.request != item.recovery_request) continue;
+            recovery_attempted = true;
         }
         const bool opened = OpenNetworkConnection(item.addr_connect,
                               // We only reconnect if the first attempt to connect succeeded at

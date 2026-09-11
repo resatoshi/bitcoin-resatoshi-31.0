@@ -1154,6 +1154,29 @@ void WalletTests::renewalExpiryTests()
         }
     }
     QVERIFY(accepted);
+
+    // A later failed operation must remain visible as prior transaction status
+    // refreshes, including while another preview is open.
+    auto* history = renewal.findChild<QLabel*>("renewHistory");
+    QVERIFY(history);
+    QVERIFY(history->text().contains("Accepted by this node"));
+    renewal.findChild<QPushButton*>("selectAllRenewable")->click();
+    button->click();
+    const QString preview_message = status->text();
+    QVERIFY(preview_message.contains("Review"));
+    QVERIFY(QMetaObject::invokeMethod(&renewal, "refresh", Qt::DirectConnection));
+    QCOMPARE(status->text(), preview_message);
+    const auto max_fee = WITH_LOCK(wallet->cs_wallet, return wallet->m_default_max_tx_fee);
+    WITH_LOCK(wallet->cs_wallet, wallet->m_default_max_tx_fee = 0);
+    ConfirmSend(nullptr, QMessageBox::Cancel);
+    button->click();
+    WITH_LOCK(wallet->cs_wallet, wallet->m_default_max_tx_fee = max_fee);
+    const QString failure = status->text();
+    QVERIFY(failure.contains("Transaction preparation failed"));
+    QVERIFY(QMetaObject::invokeMethod(&renewal, "refresh", Qt::DirectConnection));
+    QCOMPARE(status->text(), failure);
+    QVERIFY(history->text().contains("Accepted by this node"));
+    QCOMPARE(sent.count(), 1);
 }
 
 void WalletTests::renewalStatusTests()
@@ -1309,6 +1332,33 @@ void WalletTests::recoveryPeerTests()
     QCOMPARE(connman.RecoveryQueueSize(), size_t{0});
     QVERIFY(connman.GetAddedNodeInfo(true).empty());
     connman.CancelOneTry("unreachable.example.org:19333");
+    // Recovery work yields after one attempt per pass, while Core fallback
+    // reconnections retain priority even behind a queue of unreachable peers.
+    std::vector<std::string> lookups;
+    g_dns_lookup = [&](const std::string& host, bool) {
+        lookups.push_back(host);
+        return std::vector<CNetAddr>{};
+    };
+    const bool queued_a = connman.QueueOneTry("a.example.org:19333");
+    const bool queued_b = connman.QueueOneTry("b.example.org:19333");
+    const bool queued_c = connman.QueueOneTry("c.example.org:19333");
+    connman.QueueFallbackForTest("fallback.example.org:19333");
+    connman.ProcessRecoveryForTest();
+    const auto remaining_first = connman.RecoveryQueueSize();
+    const auto first_lookups = lookups;
+    connman.CancelOneTry("b.example.org:19333");
+    connman.ProcessRecoveryForTest();
+    g_dns_lookup = original_lookup;
+    QVERIFY(queued_a && queued_b && queued_c);
+    QCOMPARE(remaining_first, size_t{2});
+    QCOMPARE(first_lookups, (std::vector<std::string>{"fallback.example.org", "a.example.org"}));
+    QCOMPARE(lookups, (std::vector<std::string>{"fallback.example.org", "a.example.org", "c.example.org"}));
+    QCOMPARE(connman.RecoveryQueueSize(), size_t{0});
+    QCOMPARE(connman.GetOneTryStatus("a.example.org:19333"), Status::FAILED);
+    QCOMPARE(connman.GetOneTryStatus("c.example.org:19333"), Status::FAILED);
+    connman.CancelOneTry("a.example.org:19333");
+    connman.CancelOneTry("c.example.org:19333");
+
     // Feed a foreign VERSION header through the real transport, then retain
     // its terminal reason after the socket/node has been removed.
     const std::string name{"wrong.example.org:19333"};

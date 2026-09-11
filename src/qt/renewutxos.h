@@ -57,6 +57,7 @@ private:
     QLabel* m_summary;
     QLabel* m_destination;
     QLabel* m_status;
+    QLabel* m_history;
     QPushButton* m_renew;
     std::vector<CoinRow> m_rows;
     std::vector<QString> m_preview_destinations;

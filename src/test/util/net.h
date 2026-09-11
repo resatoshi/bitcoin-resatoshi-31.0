@@ -47,6 +47,12 @@ struct ConnmanTestMsg : public CConnman {
         m_peer_connect_timeout = timeout;
     }
 
+    void QueueFallbackForTest(const std::string& destination)
+    {
+        LOCK(m_reconnections_mutex);
+        m_reconnections.push_back({.addr_connect = CAddress{}, .grant = {}, .destination = destination,
+                                  .conn_type = ConnectionType::MANUAL, .use_v2transport = false});
+    }
     void ProcessRecoveryForTest() { PerformReconnections(); }
     void DisconnectRecoveryForTest() { DisconnectNodes(); }
     size_t RecoveryQueueSize() { LOCK(m_reconnections_mutex); return m_reconnections.size(); }

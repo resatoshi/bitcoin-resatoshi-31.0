@@ -82,12 +82,18 @@ RenewUtxos::RenewUtxos(WalletModel* wallet_model, QWidget* parent)
     m_status->setTextFormat(Qt::PlainText);
     m_status->setObjectName("renewStatus");
     m_status->setWordWrap(true);
+    m_history = new QLabel;
+    m_history->setTextFormat(Qt::PlainText);
+    m_history->setObjectName("renewHistory");
+    m_history->setWordWrap(true);
+    m_history->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_renew = new QPushButton(tr("Renew UTXOs — Preview"));
     m_renew->setObjectName("renewUtxosButton");
     m_renew->setEnabled(false);
     layout->addWidget(m_summary);
     layout->addWidget(m_destination);
     layout->addWidget(m_status);
+    layout->addWidget(m_history);
     layout->addWidget(m_renew);
 
     connect(near_expiry_button, &QPushButton::clicked, this, &RenewUtxos::selectNearExpiry);
@@ -138,7 +144,7 @@ void RenewUtxos::refresh()
                 lines.push_back(tr("%1 — status temporarily unavailable").arg(QString::fromStdString(txid.ToString())));
             }
         }
-        m_status->setText(lines.join("\n"));
+        m_history->setText(lines.join("\n"));
     }
     if (m_preview_ready) return;
     std::set<COutPoint> previously_selected;
