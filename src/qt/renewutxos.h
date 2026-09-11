@@ -10,6 +10,7 @@
 
 #include <QWidget>
 
+#include <span>
 #include <vector>
 
 namespace interfaces { struct WalletTxStatus; }
@@ -46,6 +47,7 @@ private:
         bool eligible;
     };
     void clearPreview();
+    bool validateSelection(std::span<const CoinRow> selected);
     std::vector<CoinRow> selectedCoins() const;
     CAmount estimatedFee(const std::vector<CoinRow>& coins, bool* used_fallback = nullptr) const;
     QString formatAmount(CAmount amount) const;

@@ -227,3 +227,14 @@ UTXO list is refreshed. No prepared batch is sent. Review the updated selection
 and preview again to obtain a fresh exact-fee confirmation. Periodic refresh
 uses an outpoint set to preserve eligible selections without scanning the full
 selection list for every row.
+
+## Input freshness (local 31.0.10)
+
+Renewal checks the selected outputs before preview/preparation, after unlock,
+after final confirmation, and before each transaction in a batch. Spent,
+expired, locked, immature or changed outputs invalidate the preview. Previously
+submitted chunks remain submitted; remaining chunks require a fresh preview.
+These checks use the current local wallet view; they cannot predict a competing
+transaction or block that has not yet arrived.
+
+Language settings and BTC, mBTC, bits and sat units remain unchanged.

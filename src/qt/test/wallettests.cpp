@@ -357,10 +357,21 @@ void TestGUI(interfaces::Node& node, const std::shared_ptr<CWallet>& wallet)
     QVERIFY(FindTx(*transactionTableModel, txid1).isValid());
     QVERIFY(FindTx(*transactionTableModel, txid2).isValid());
 
-    // Force a real preparation failure through the wallet fee limit. The
-    // refreshed list must also drop inputs spent since the preview opened,
-    // and a new preview must reach exact-fee confirmation after recovery.
+    // Inputs spent since the preview must be rejected before preparation,
+    // even though Core's manual coin-control path can construct a conflict.
     QSignalSpy renewed(renewal, &RenewUtxos::coinsSent);
+    ConfirmSend(nullptr, QMessageBox::Cancel);
+    preview->click();
+    QVERIFY(dashboard.findChild<QLabel*>("renewStatus")->text().contains("Selected UTXOs changed"));
+    QCOMPARE(preview->text(), QString::fromUtf8("Renew UTXOs — Preview"));
+    qApp->processEvents();
+    QCOMPARE(renewed.count(), 0);
+    QCOMPARE(transactionTableModel->rowCount({}), 107);
+    select_all->click();
+    preview->click();
+
+    // Force a separate real preparation failure through the wallet fee limit.
+
     // Cancel an unexpected confirmation as well, so regressions fail safely.
     ConfirmSend(nullptr, QMessageBox::Cancel);
     const auto saved_max_fee = WITH_LOCK(wallet->cs_wallet, return wallet->m_default_max_tx_fee);
@@ -384,6 +395,28 @@ void TestGUI(interfaces::Node& node, const std::shared_ptr<CWallet>& wallet)
     preview->click();
     QVERIFY(renewal_confirmation.contains("Exact total fee"));
     QVERIFY(dashboard.findChild<QLabel*>("renewStatus")->text().contains("Renewal cancelled"));
+    QCOMPARE(renewed.count(), 0);
+    qApp->processEvents();
+    QCOMPARE(transactionTableModel->rowCount({}), 107);
+
+    // Lock an eligible input while the final confirmation is open. Accepting
+    // that dialog must not submit the now-stale transaction.
+    COutPoint lock_target;
+    for (const auto& [destination, group] : walletModel.wallet().listCoins()) {
+        for (const auto& [outpoint, coin] : group) {
+            if (selected_outpoints().contains(QString::fromStdString(outpoint.ToString()))) lock_target = outpoint;
+        }
+    }
+    QVERIFY(!lock_target.IsNull());
+    bool input_locked{false};
+    QTimer::singleShot(0, [&] { input_locked = walletModel.wallet().lockCoin(lock_target, false); });
+    ConfirmSend(nullptr, QMessageBox::Yes);
+    preview->click();
+    // Restore the test wallet before assertions or subsequent wallet tests.
+    const bool input_unlocked = walletModel.wallet().unlockCoin(lock_target);
+    QVERIFY(input_locked && input_unlocked);
+    QVERIFY(dashboard.findChild<QLabel*>("renewStatus")->text().contains("Selected UTXOs changed"));
+    QCOMPARE(preview->text(), QString::fromUtf8("Renew UTXOs — Preview"));
     QCOMPARE(renewed.count(), 0);
     qApp->processEvents();
     QCOMPARE(transactionTableModel->rowCount({}), 107);

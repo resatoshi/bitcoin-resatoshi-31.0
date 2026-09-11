@@ -256,10 +256,33 @@ void RenewUtxos::selectAllEligible()
     selectionChanged();
 }
 
+bool RenewUtxos::validateSelection(std::span<const CoinRow> selected)
+{
+    std::vector<COutPoint> outpoints;
+    outpoints.reserve(selected.size());
+    for (const auto& coin : selected) outpoints.push_back(coin.outpoint);
+    const auto current = m_wallet_model->wallet().getCoins(outpoints);
+    bool valid = current.size() == selected.size();
+    for (size_t i = 0; valid && i < current.size(); ++i) {
+        const auto& coin = current[i];
+        valid = coin.block_height >= 0 && coin.depth_in_main_chain > 0 &&
+                coin.blocks_to_maturity == 0 && coin.is_spendable && coin.is_safe && !coin.is_spent &&
+                !m_wallet_model->wallet().isLockedCoin(selected[i].outpoint) &&
+                coin.txout.nValue == selected[i].amount &&
+                coin.block_height + node::recycle::EXPIRY_BLOCKS == selected[i].expiry_height;
+    }
+    if (!valid) {
+        clearPreview();
+        refresh();
+        m_status->setText(tr("Selected UTXOs changed. Renewal stopped and the list was refreshed. Review your selection and preview again. Previously submitted transactions remain listed."));
+    }
+    return valid;
+}
+
 void RenewUtxos::renew()
 {
     const auto selected = selectedCoins();
-    if (selected.empty()) return;
+    if (selected.empty() || !validateSelection(selected)) return;
     CAmount total{0};
     for (const auto& coin : selected) total += coin.amount;
     bool fallback{false};
@@ -296,6 +319,8 @@ void RenewUtxos::renew()
         return;
     }
 
+    // Unlocking can run a nested event loop while wallet/chain state changes.
+    if (!validateSelection(selected)) return;
     std::vector<std::unique_ptr<WalletModelTransaction>> transactions;
     CAmount exact_fee{0};
     unsigned int total_vsize{0};
@@ -354,13 +379,20 @@ void RenewUtxos::renew()
         return;
     }
 
+    // Recheck the whole batch after the confirmation dialog, then each chunk
+    // immediately before submission. Earlier submitted chunks are not rolled back.
+    if (!validateSelection(selected)) return;
     QStringList txids;
     try {
+        size_t offset{0};
         for (auto& transaction : transactions) {
+            const size_t count = std::min(MAX_INPUTS_PER_TRANSACTION, selected.size() - offset);
+            if (!validateSelection(std::span{selected}.subspan(offset, count))) return;
             const Txid txid = transaction->getWtx()->GetHash();
             m_wallet_model->sendCoins(*transaction);
             m_sent_txids.push_back(txid);
             txids.push_back(QString::fromStdString(txid.ToString()));
+            offset += count;
         }
     } catch (const std::exception& error) {
         m_status->setText(tr("Broadcast stopped: %1. Already listed TXIDs may have been sent; refresh before retrying.\n%2")
