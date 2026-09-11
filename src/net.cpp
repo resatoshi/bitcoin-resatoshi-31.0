@@ -377,6 +377,8 @@ CNode* CConnman::ConnectNode(CAddress addrConnect,
                              const std::optional<Proxy>& proxy_override)
 {
     AssertLockNotHeld(m_unused_i2p_sessions_mutex);
+    AssertLockNotHeld(m_reconnections_mutex);
+    AssertLockNotHeld(m_seed_addresses_mutex);
     assert(conn_type != ConnectionType::INBOUND);
 
     if (pszDest == nullptr) {
@@ -3780,6 +3782,7 @@ std::vector<CAddress> CConnman::GetAddresses(CNode& requestor, size_t max_addres
 
 bool CConnman::GetSeedAddresses(std::set<CNetAddr>& addresses) const
 {
+    AssertLockNotHeld(m_seed_addresses_mutex);
     addresses.clear();
     LOCK(m_seed_addresses_mutex);
     bool complete{true};
@@ -4208,6 +4211,7 @@ uint64_t CConnman::CalculateKeyedNetGroup(const CNetAddr& address) const
 
 bool CConnman::QueueOneTry(const std::string& destination)
 {
+    AssertLockNotHeld(m_reconnections_mutex);
     if (!GetNetworkActive() || destination.empty() || destination.size() > 300) return false;
     LOCK(m_reconnections_mutex);
     auto it = m_one_tries.find(destination);
@@ -4230,6 +4234,7 @@ bool CConnman::QueueOneTry(const std::string& destination)
 
 std::set<CService> CConnman::OneTryAddresses(const std::string& destination) const
 {
+    AssertLockNotHeld(m_reconnections_mutex);
     LOCK(m_reconnections_mutex);
     auto it = m_one_tries.find(destination);
     return it == m_one_tries.end() || std::chrono::steady_clock::now() >= it->second.addresses_until
@@ -4238,6 +4243,7 @@ std::set<CService> CConnman::OneTryAddresses(const std::string& destination) con
 
 CConnman::OneTryStatus CConnman::GetOneTryStatus(const std::string& destination) const
 {
+    AssertLockNotHeld(m_reconnections_mutex);
     const auto addresses = OneTryAddresses(destination);
     std::set<NodeId> peers;
     {
@@ -4257,6 +4263,7 @@ CConnman::OneTryStatus CConnman::GetOneTryStatus(const std::string& destination)
 
 void CConnman::CancelOneTry(const std::string& destination)
 {
+    AssertLockNotHeld(m_reconnections_mutex);
     LOCK(m_reconnections_mutex);
     m_one_tries.erase(destination);
     m_reconnections.remove_if([&](const auto& item) { return item.recovery_request && item.destination == destination; });

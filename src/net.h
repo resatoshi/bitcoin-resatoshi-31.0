@@ -1191,13 +1191,13 @@ public:
                                bool use_v2transport,
                                const std::optional<Proxy>& proxy_override = std::nullopt,
                                uint64_t recovery_request = 0)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex, !m_reconnections_mutex, !m_seed_addresses_mutex);
 
     enum class OneTryStatus { SAVED, CONNECTING, CONNECTED, FAILED, WRONG_NETWORK };
-    bool QueueOneTry(const std::string& destination);
-    OneTryStatus GetOneTryStatus(const std::string& destination) const;
-    void CancelOneTry(const std::string& destination);
-    std::set<CService> OneTryAddresses(const std::string& destination) const;
+    bool QueueOneTry(const std::string& destination) EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex);
+    OneTryStatus GetOneTryStatus(const std::string& destination) const EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex);
+    void CancelOneTry(const std::string& destination) EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex);
+    std::set<CService> OneTryAddresses(const std::string& destination) const EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex);
 
     /// Group of private broadcast related members.
     class PrivateBroadcast
@@ -1343,7 +1343,7 @@ public:
     int GetExtraBlockRelayCount() const;
 
     //! Cached base seed resolutions; performs no DNS or socket operations.
-    bool GetSeedAddresses(std::set<CNetAddr>& addresses) const;
+    bool GetSeedAddresses(std::set<CNetAddr>& addresses) const EXCLUSIVE_LOCKS_REQUIRED(!m_seed_addresses_mutex);
 
     bool AddNode(const AddedNodeParams& add) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
     bool RemoveAddedNode(std::string_view node) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
@@ -1363,7 +1363,7 @@ public:
      *                          - Max total outbound connection capacity filled
      *                          - Max connection capacity for type is filled
      */
-    bool AddConnection(const std::string& address, ConnectionType conn_type, bool use_v2transport) EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+    bool AddConnection(const std::string& address, ConnectionType conn_type, bool use_v2transport) EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex, !m_reconnections_mutex, !m_seed_addresses_mutex);
 
     size_t GetNodeCount(ConnectionDirection) const;
     std::map<CNetAddr, LocalServiceInfo> getNetLocalAddresses() const;
@@ -1436,13 +1436,13 @@ private:
     bool Bind(const CService& addr, unsigned int flags, NetPermissionFlags permissions);
     bool InitBinds(const Options& options);
 
-    void ThreadOpenAddedConnections() EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex);
+    void ThreadOpenAddedConnections() EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex, !m_seed_addresses_mutex);
     void AddAddrFetch(const std::string& strDest) EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex);
-    void ProcessAddrFetch() EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_unused_i2p_sessions_mutex);
-    void ThreadOpenConnections(std::vector<std::string> connect, std::span<const std::string> seed_nodes) EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_added_nodes_mutex, !m_nodes_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex);
+    void ProcessAddrFetch() EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex, !m_seed_addresses_mutex);
+    void ThreadOpenConnections(std::vector<std::string> connect, std::span<const std::string> seed_nodes) EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_added_nodes_mutex, !m_nodes_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex, !m_seed_addresses_mutex);
     void ThreadMessageHandler() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
     void ThreadI2PAcceptIncoming();
-    void ThreadPrivateBroadcast() EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+    void ThreadPrivateBroadcast() EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex, !m_reconnections_mutex, !m_seed_addresses_mutex);
     void AcceptConnection(const ListenSocket& hListenSocket);
 
     /**
@@ -1536,7 +1536,7 @@ private:
                        ConnectionType conn_type,
                        bool use_v2transport,
                        const std::optional<Proxy>& proxy_override)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex, !m_reconnections_mutex, !m_seed_addresses_mutex);
 
     void AddWhitelistPermissionFlags(NetPermissionFlags& flags, std::optional<CNetAddr> addr, const std::vector<NetWhitelistPermissions>& ranges) const;
 
@@ -1817,7 +1817,7 @@ private:
     uint64_t m_one_try_sequence GUARDED_BY(m_reconnections_mutex){0};
 
     /** Attempt reconnections, if m_reconnections non-empty. */
-    void PerformReconnections() EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex, !m_unused_i2p_sessions_mutex);
+    void PerformReconnections() EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex, !m_unused_i2p_sessions_mutex, !m_seed_addresses_mutex);
 
     /**
      * Cap on the size of `m_unused_i2p_sessions`, to ensure it does not
