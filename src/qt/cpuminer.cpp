@@ -11,7 +11,6 @@
 #include <interfaces/mining.h>
 #include <interfaces/node.h>
 #include <key_io.h>
-#include <netbase.h>
 #include <script/solver.h>
 #include <univalue.h>
 
@@ -83,12 +82,7 @@ void CpuMiner::worker(std::string destination)
         const auto ready = [&] {
             if (m_pause_requested.load() || m_node.shutdownRequested()) return false;
             if (regtest) return true;
-            int headers{0};
-            int64_t header_time{0};
-            return !m_node.isLoadingBlocks() && m_node.getNetworkActive() &&
-                m_node.hasMiningPeer() &&
-                m_node.getHeaderTip(headers, header_time) && headers <= m_node.getNumBlocks() &&
-                (!m_node.isInitialBlockDownload() || m_node.getNumBlocks() == 0);
+            return m_node.isReadyToMine();
         };
         while (running() && !m_node.shutdownRequested()) {
             if (!ready()) {

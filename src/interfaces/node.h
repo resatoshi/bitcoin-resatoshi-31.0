@@ -154,6 +154,9 @@ public:
     //! At least one handshake-complete block relay connection.
     virtual bool hasMiningPeer() = 0;
 
+    //! Mining readiness, allowing a verified, peer-confirmed old mainnet tip.
+    virtual bool isReadyToMine() = 0;
+
     //! Reuse connection-thread seed resolutions without performing DNS.
     virtual bool getSeedAddresses(std::set<CNetAddr>& addresses) = 0;
 

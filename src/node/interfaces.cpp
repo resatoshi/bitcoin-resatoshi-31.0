@@ -271,6 +271,40 @@ public:
         });
         return found;
     }
+    bool isReadyToMine() override
+    {
+        if (shutdownRequested() || isLoadingBlocks() || !getNetworkActive() || !hasMiningPeer()) return false;
+        int height;
+        {
+            LOCK(::cs_main);
+            const auto* tip = chainman().ActiveChain().Tip();
+            const auto* header = chainman().m_best_header;
+            if (!tip || !header || tip->nChainWork < chainman().MinimumChainWork() ||
+                tip->nChainWork < header->nChainWork || tip->nHeight < header->nHeight) return false;
+            if (!chainman().IsInitialBlockDownload()) return true;
+            if (chainman().GetParams().GetChainType() != ChainType::MAIN) return false;
+            height = tip->nHeight;
+        }
+        // Keep the existing genesis bootstrap exception. Above genesis a
+        // handshake alone is insufficient: a peer must have announced the tip.
+        // Core requests headers from the preceding block, so an up-to-date peer
+        // also announces an old tip when there are no new blocks to download.
+        NodesStats peers;
+        if (!getNodesStats(peers)) return false;
+        bool confirmed{false};
+        for (const auto& [peer, available, state] : peers) {
+            if (!isConnected(peer.nodeid)) continue;
+            if (!available) return false;
+            if (state.m_starting_height > height || state.nSyncHeight > height ||
+                state.presync_height >= 0 || !state.vHeightInFlight.empty()) return false;
+            const bool relay = peer.m_conn_type != ConnectionType::FEELER &&
+                peer.m_conn_type != ConnectionType::ADDR_FETCH &&
+                peer.m_conn_type != ConnectionType::PRIVATE_BROADCAST;
+            if (relay && (height == 0 || ((state.their_services & (NODE_NETWORK | NODE_NETWORK_LIMITED)) &&
+                                         state.nSyncHeight == height))) confirmed = true;
+        }
+        return confirmed;
+    }
     bool getSeedAddresses(std::set<CNetAddr>& addresses) override
     {
         return m_context->connman && m_context->connman->GetSeedAddresses(addresses);

@@ -67,7 +67,7 @@ Uninstalling the program does not need to delete the wallet or chain data.
 Back up the wallet before deliberately removing the data directory.
 
 
-## CPU mining implementation (local 31.0.3 build)
+## CPU mining implementation (local 31.0.4 build)
 
 Workers use the local Core mining interface, reuse a block template for up to
 one second, and assign a unique coinbase extranonce to every template. Work is
@@ -81,10 +81,9 @@ the first compression block of an unchanged header. Hash output is checked
 against the original Core hash function in tests, including nonce boundaries.
 Mining does not change subsidy, recycle eligibility, BTC/sat units or addresses.
 
-At heights above zero, initial block download must complete before mining.
-A chain with a tip too old for Core's IBD heuristic may therefore require
-operator recovery before this GUI will mine; peer presence alone does not
-prove that the chain is current. The height-zero launch exception is retained.
+An old tip alone no longer prevents local CPU mining. The readiness checks
+for this case are described below; peer presence alone is still insufficient
+above genesis. Normal block download and validation continue unchanged.
 
 
 ## Bootstrap handoff
@@ -121,17 +120,29 @@ extra local DNS queries. This GUI policy runs only on mainnet. Removing the
 GUI's extra workers does not impose a timeout on Core's own OS DNS resolver or
 guarantee a maximum duration for whole-node shutdown.
 
-## Restarting after a long network pause
+## Mining after a long network pause
 
-Above genesis, CPU mining still requires Core to leave initial block download.
-With the default 24-hour maximum tip age, a restarted node whose most recent
-block is older than this can remain paused even when all available blocks
-have been downloaded. This was reproduced using public mainnet block 1 and
-an isolated test clock. No automatic IBD bypass is implemented.
+The local CPU miner can mine on an old mainnet tip without changing
+`-maxtipage`. The mining button and running workers use the same readiness
+check. Loading/reindexing, missing blocks behind the best known header, and
+insufficient chain work still prevent mining. Networking and a completed
+relay connection are required.
 
-Before an upgrade, check the actual tip timestamp and synchronization status
-on an isolated upgraded node. If the entire network has stopped long enough
-for this condition to apply, establish a recovery procedure before replacing
-all miners. Core's `-maxtipage` is an existing operator setting, not a consensus
-change; increasing it relaxes a synchronization safeguard and must not be
-silently enabled by the installer.
+When Core still reports initial block download because the tip is old, a
+block-serving peer must have announced a header at the local tip height.
+A handshake alone does not suffice above genesis. Connected peers advertising
+a higher starting/header height, headers presynchronization, or block downloads
+in flight keep the miner paused. Core's existing initial header request starts
+from the preceding block, so an up-to-date peer also announces an old tip when
+no new blocks exist. The existing genesis bootstrap exception is retained.
+
+This changes only the local GUI/CPU mining decision on mainnet. Core's global
+IBD flag, transaction relay and mining RPC policy remain unchanged, as do
+proof of work, difficulty adjustment, rewards, addresses and historical blocks.
+The bootstrap manager still retains bootstrap connections while Core reports
+IBD. A newly mined current-time block can let Core finish IBD normally.
+
+Readiness reflects the information available from connected peers, not proof
+that an unreachable peer has no stronger chain. Mining is not automatically
+started; press Start Mining as usual. A running miner pauses when prerequisites
+are lost and resumes when they return.

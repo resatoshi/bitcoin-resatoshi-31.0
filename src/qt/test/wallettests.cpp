@@ -10,6 +10,7 @@
 #include <interfaces/mining.h>
 #include <interfaces/node.h>
 #include <key_io.h>
+#include <netmessagemaker.h>
 #include <qt/bitcoinamountfield.h>
 #include <qt/bitcoinunits.h>
 #include <qt/clientmodel.h>
@@ -814,40 +815,65 @@ void WalletTests::bootstrapManagerTests()
 
 void WalletTests::cpuMinerOldTipTests()
 {
-    TestingSetup test{ChainType::MAIN};
-    m_node.setContext(&test.m_node);
     CBlock block;
-    // Public mainnet block 1, read from the operating node without modifying it.
+    // Public mainnet block 1; no operational node or wallet is used.
     QVERIFY(DecodeHexBlk(block, "00000020ec740156fa8f5bbe37f8ad3b43144f68746f9c960046ddfc45328179030000003955d305c79fb00d64765a20de3070475f4f293e3465b670abd8db7075e9caa336fd9f6a12a1031d0f59000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff025100feffffff0200f2052a01000000160014274db26c53b6d883fa72cda65452e186fa1cd43d0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
-    SetMockTime(block.GetBlockTime() + 2 * 24 * 60 * 60);
-    QVERIFY(test.m_node.chainman->ProcessNewBlock(std::make_shared<const CBlock>(block), /*force_processing=*/true, /*min_pow_checked=*/true, nullptr));
-    QCOMPARE(m_node.getNumBlocks(), 1);
-    QVERIFY(m_node.isInitialBlockDownload());
-    auto& connman = static_cast<ConnmanTestMsg&>(*test.m_node.connman);
-    auto* peer = new CNode{0, nullptr, CAddress{}, 0, 0, CService{}, "old-tip-test",
-                          ConnectionType::OUTBOUND_FULL_RELAY, false, 0};
-    peer->SetCommonVersion(PROTOCOL_VERSION);
-    test.m_node.peerman->InitializeNode(*peer, ServiceFlags(NODE_NETWORK | NODE_WITNESS));
-    peer->fSuccessfullyConnected = true;
-    connman.AddTestNode(*peer);
-    CKey key;
-    key.MakeNewKey(true);
-    CpuMiner miner{m_node};
-    QVERIFY(miner.start({EncodeDestination(PKHash{key.GetPubKey()})}));
-    QTRY_VERIFY_WITH_TIMEOUT(miner.paused(), 5000);
-    QTest::qWait(100);
-    QCOMPARE(miner.hashes(), uint64_t{0});
-    // Model a recent tip. This is a test clock change, not a recovery policy.
-    SetMockTime(block.GetBlockTime() + 1);
-    {
-        LOCK(cs_main);
-        test.m_node.chainman->UpdateIBDStatus();
+    for (bool body_first : {false, true}) {
+        TestingSetup test{ChainType::MAIN};
+        m_node.setContext(&test.m_node);
+        SetMockTime(block.GetBlockTime() + 5 * 24 * 60 * 60);
+        const auto accept_body = [&] {
+            return test.m_node.chainman->ProcessNewBlock(std::make_shared<const CBlock>(block),
+                /*force_processing=*/true, /*min_pow_checked=*/true, nullptr);
+        };
+        if (body_first) QVERIFY(accept_body());
+        auto& connman = static_cast<ConnmanTestMsg&>(*test.m_node.connman);
+        auto* peer = new CNode{0, nullptr, CAddress{}, 0, 0, CService{}, "old-tip-test",
+                              ConnectionType::OUTBOUND_FULL_RELAY, false, 0};
+        {
+            LOCK(NetEventsInterface::g_msgproc_mutex);
+            connman.Handshake(*peer, true, ServiceFlags(NODE_NETWORK | NODE_WITNESS),
+                              ServiceFlags(NODE_NETWORK | NODE_WITNESS), PROTOCOL_VERSION, true);
+        }
+        connman.AddTestNode(*peer);
+        const auto announce_header = [&] {
+            LOCK(NetEventsInterface::g_msgproc_mutex);
+            std::vector<CBlock> headers{CBlock{static_cast<const CBlockHeader&>(block)}};
+            connman.FlushSendBuffer(*peer);
+            connman.ReceiveMsgFrom(*peer, NetMsg::Make(NetMsgType::HEADERS, TX_WITH_WITNESS(headers)));
+            peer->fPauseSend = false;
+            connman.ProcessMessagesOnce(*peer);
+        };
+        if (!body_first) announce_header();
+        // Wait either for the missing block body or for peer confirmation.
+        QVERIFY(!m_node.isReadyToMine());
+        CKey key;
+        key.MakeNewKey(true);
+        CpuMiner miner{m_node};
+        QVERIFY(miner.start({EncodeDestination(PKHash{key.GetPubKey()})}));
+        QTRY_VERIFY_WITH_TIMEOUT(miner.paused(), 5000);
+        QTest::qWait(100);
+        QCOMPARE(miner.hashes(), uint64_t{0});
+        miner.setPaused(true);
+        if (body_first) announce_header();
+        else QVERIFY(accept_body());
+        QCOMPARE(m_node.getNumBlocks(), 1);
+        // The tip is still five days old and Core still reports IBD. Only the
+        // local mining decision is relaxed, after actual P2P header exchange.
+        QVERIFY(m_node.isInitialBlockDownload());
+        QVERIFY(m_node.isReadyToMine());
+        miner.setPaused(false);
+        QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > 0 || !miner.error().empty(), 5000);
+        m_node.setNetworkActive(false);
+        QTRY_VERIFY_WITH_TIMEOUT(miner.paused(), 5000);
+        QVERIFY(!m_node.isReadyToMine());
+        const auto before = miner.hashes();
+        m_node.setNetworkActive(true);
+        QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > before || !miner.error().empty(), 5000);
+        miner.stop();
+        QVERIFY2(miner.error().empty(), miner.error().c_str());
+        SetMockTime(0);
+        test.m_node.peerman->FinalizeNode(*peer);
+        connman.ClearTestNodes();
     }
-    QVERIFY(!m_node.isInitialBlockDownload());
-    QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > 0 || !miner.error().empty(), 5000);
-    miner.stop();
-    QVERIFY2(miner.error().empty(), miner.error().c_str());
-    SetMockTime(0);
-    test.m_node.peerman->FinalizeNode(*peer);
-    connman.ClearTestNodes();
 }

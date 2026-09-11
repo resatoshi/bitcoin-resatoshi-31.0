@@ -172,16 +172,7 @@ void MinerDashboard::showOutOfSyncWarning(bool show) { m_overview->showOutOfSync
 
 bool MinerDashboard::synchronized() const
 {
-    if (!m_client_model) return false;
-    // ReSatoshi can legitimately have a height-zero tip older than Core's
-    // generic IBD max-tip-age heuristic before block 1 exists. Requiring a
-    // live peer and no header/block gap allows the first block to be mined.
-    // Above genesis, also require normal Core IBD completion.
-    return !m_client_model->node().isLoadingBlocks() &&
-           (!m_client_model->node().isInitialBlockDownload() || m_client_model->getNumBlocks() == 0) &&
-           m_client_model->node().getNetworkActive() &&
-           m_client_model->node().hasMiningPeer() &&
-           m_client_model->getHeaderTipHeight() <= m_client_model->getNumBlocks();
+    return m_client_model && m_client_model->node().isReadyToMine();
 }
 
 bool MinerDashboard::ensureMiningAddresses(int count, std::vector<std::string>& addresses)

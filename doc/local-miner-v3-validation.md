@@ -1,5 +1,8 @@
 # Local Windows miner 31.0.3 validation
 
+Historical results. The old-tip mining restriction is addressed by
+[31.0.4](local-miner-v4-validation.md).
+
 Date: 2026-09-11. Branch: `fix/windows-miner-recycle-upgrade`.
 No upload, installation over an existing installation, or mainnet deployment
 is part of this change.
