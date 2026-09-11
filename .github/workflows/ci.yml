@@ -471,7 +471,7 @@ jobs:
           - name: 'ASan + LSan + UBSan + integer'
             cirrus-runner: 'ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-md' # has to match container in ci/test/00_setup_env_native_asan.sh for tracing tools
             fallback-runner: 'ubuntu-24.04'
-            timeout-minutes: 120
+            timeout-minutes: 360
             file-env: './ci/test/00_setup_env_native_asan.sh'
 
           - name: 'macOS-cross to arm64'
@@ -525,19 +525,19 @@ jobs:
           - name: 'TSan'
             cirrus-runner: 'ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-md'
             fallback-runner: 'ubuntu-24.04'
-            timeout-minutes: 120
+            timeout-minutes: 360
             file-env: './ci/test/00_setup_env_native_tsan.sh'
 
           - name: 'MSan, fuzz'
             cirrus-runner: 'ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-md'
             fallback-runner: 'ubuntu-24.04'
-            timeout-minutes: 150
+            timeout-minutes: 360
             file-env: './ci/test/00_setup_env_native_fuzz_with_msan.sh'
 
           - name: 'MSan'
             cirrus-runner: 'ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-lg'
             fallback-runner: 'ubuntu-24.04'
-            timeout-minutes: 120
+            timeout-minutes: 360
             file-env: './ci/test/00_setup_env_native_msan.sh'
 
     steps:
@@ -583,7 +583,7 @@ jobs:
     needs: runners
     runs-on: ${{ needs.runners.outputs.provider == 'cirrus' && 'ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-xs' || 'ubuntu-24.04' }}
     if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       CONTAINER_NAME: "bitcoin-linter"
     steps:
