@@ -13,6 +13,7 @@
 #include <netbase.h>
 #include <netgroup.h>
 #include <util/strencodings.h>
+#include <util/string.h>
 
 #include <QRegularExpression>
 #include <QSettings>
@@ -122,7 +123,7 @@ std::optional<std::string> BootstrapManager::normalizeAddress(const std::string&
     for (const auto& label : domain.split('.')) {
         if (!QRegularExpression{"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"}.match(label).hasMatch()) return {};
     }
-    return domain.toStdString() + ":" + std::to_string(port);
+    return domain.toStdString() + ":" + util::ToString(port);
 }
 
 bool BootstrapManager::saveSettings()
@@ -190,7 +191,7 @@ void BootstrapManager::poll(Clock::time_point now)
     std::vector<std::string> seeds;
     for (auto seed : Params().DNSSeeds()) {
         if (seed.ends_with('.')) seed.pop_back();
-        seeds.push_back(seed + ":" + std::to_string(Params().GetDefaultPort()));
+        seeds.push_back(seed + ":" + util::ToString(Params().GetDefaultPort()));
     }
     interfaces::Node::NodesStats stats;
     if (!m_node.getNodesStats(stats)) return;

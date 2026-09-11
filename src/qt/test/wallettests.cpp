@@ -40,6 +40,7 @@
 #include <script/solver.h>
 #include <test/util/setup_common.h>
 #include <test/util/net.h>
+#include <util/string.h>
 #include <validation.h>
 #include <wallet/test/util.h>
 #include <wallet/wallet.h>
@@ -945,7 +946,7 @@ void WalletTests::bootstrapManagerTests()
             if (host != "rotating.example.org") return saved_lookup(host, allow_lookup);
             std::vector<CNetAddr> answers{LookupNumeric("8.8.8.8", 19333)};
             for (int i = 0; i < 255; ++i) answers.push_back(LookupNumeric(
-                "192.0." + std::to_string(subnet) + "." + std::to_string(i), 19333));
+                "192.0." + util::ToString(subnet) + "." + util::ToString(i), 19333));
             return answers;
         };
         const bool queued = connman.QueueOneTry(rotating);
@@ -954,7 +955,7 @@ void WalletTests::bootstrapManagerTests()
         QVERIFY(queued);
         const auto snapshot = connman.OneTryAddresses(rotating);
         QCOMPARE(snapshot.size(), size_t{256});
-        QVERIFY(snapshot.contains(LookupNumeric("192.0." + std::to_string(subnet) + ".1", 19333)));
+        QVERIFY(snapshot.contains(LookupNumeric("192.0." + util::ToString(subnet) + ".1", 19333)));
         if (subnet == 3) QVERIFY(!snapshot.contains(LookupNumeric("192.0.2.1", 19333)));
     }
     connman.CancelOneTry(rotating);
@@ -1062,7 +1063,7 @@ void WalletTests::renewalExpiryTests()
     test.m_node.wallet_loader = wallet_loader.get();
     m_node.setContext(&test.m_node);
     std::shared_ptr<CWallet> wallet = wallet::CreateSyncedWallet(*test.m_node.chain,
-        test.m_node.chainman->ActiveChain(), test.coinbaseKey);
+        *WITH_LOCK(cs_main, return &test.m_node.chainman->ActiveChain()), test.coinbaseKey);
     wallet->SetBroadcastTransactions(true);
     std::unique_ptr<const PlatformStyle> style{PlatformStyle::instantiate("other")};
     MiniGUI gui{m_node, style.get()};
@@ -1186,7 +1187,7 @@ void WalletTests::renewalStatusTests()
     TestChain100Setup test;
     m_node.setContext(&test.m_node);
     auto wallet = wallet::CreateSyncedWallet(*test.m_node.chain,
-        test.m_node.chainman->ActiveChain(), test.coinbaseKey);
+        *WITH_LOCK(cs_main, return &test.m_node.chainman->ActiveChain()), test.coinbaseKey);
     {
         LOCK(wallet->cs_wallet);
         wallet->SetBroadcastTransactions(true);
@@ -1277,7 +1278,7 @@ void WalletTests::recoveryPeerTests()
         CKey key;
         key.MakeNewKey(true);
         std::shared_ptr<CWallet> gui_wallet{wallet::CreateSyncedWallet(*test.m_node.chain,
-            test.m_node.chainman->ActiveChain(), key)};
+            *WITH_LOCK(cs_main, return &test.m_node.chainman->ActiveChain()), key)};
         std::unique_ptr<const PlatformStyle> style(PlatformStyle::instantiate("other"));
         MiniGUI gui(m_node, style.get());
         gui.initModelForWallet(m_node, gui_wallet, style.get());
