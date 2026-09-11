@@ -6,6 +6,7 @@
 
 from decimal import Decimal
 import http.client
+import subprocess
 import time
 
 from test_framework.blocktools import create_block, create_coinbase
@@ -71,6 +72,13 @@ class RecycleTest(BitcoinTestFramework):
                 self.nodes[1].gettxoutsetinfo("muhash", use_index=False)
             except (http.client.RemoteDisconnected, ConnectionResetError):
                 pass
+            except subprocess.CalledProcessError as error:
+                # --usecli reports the deliberate RPC disconnect as a failed
+                # subprocess. Do not accept unrelated CLI errors. The crash log
+                # and stopped process are still required below in either mode.
+                assert self.nodes[1].use_cli
+                assert_equal(error.returncode, 1)
+                assert "Could not connect to the server" in error.output
             self.nodes[1].wait_until_stopped(timeout=20)
         self.start_node(1)
         self.connect_nodes(0, 1)
