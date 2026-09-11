@@ -126,6 +126,7 @@ WalletTxOut MakeWalletTxOut(const CWallet& wallet,
     result.is_spendable = wallet.IsMine(result.txout);
     result.is_safe = depth > 0;
     result.is_spent = wallet.IsSpent(COutPoint(wtx.GetHash(), n));
+    result.is_expired = wallet.IsExpired(COutPoint(wtx.GetHash(), n));
     return result;
 }
 
@@ -144,6 +145,7 @@ WalletTxOut MakeWalletTxOut(const CWallet& wallet,
     result.is_spendable = wallet.IsMine(result.txout);
     result.is_safe = output.safe;
     result.is_spent = wallet.IsSpent(output.outpoint);
+    result.is_expired = wallet.IsExpired(output.outpoint);
     return result;
 }
 

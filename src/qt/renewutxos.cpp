@@ -151,7 +151,7 @@ void RenewUtxos::refresh()
         for (const auto& [outpoint, coin] : group) {
             const int expiry = coin.block_height < 0 ? -1 : coin.block_height + node::recycle::EXPIRY_BLOCKS;
             const bool eligible = coin.block_height >= 0 && coin.depth_in_main_chain > 0 && coin.blocks_to_maturity == 0 &&
-                                  coin.is_spendable && coin.is_safe && !coin.is_spent &&
+                                  coin.is_spendable && coin.is_safe && !coin.is_spent && !coin.is_expired &&
                                   !m_wallet_model->wallet().isLockedCoin(outpoint) && m_height < expiry;
             const int row = m_table->rowCount();
             m_table->insertRow(row);
@@ -171,7 +171,7 @@ void RenewUtxos::refresh()
             else if (!coin.is_spendable || !coin.is_safe) remaining_text = tr("Not spendable — not renewable");
             else if (coin.is_spent) remaining_text = tr("Already spent");
             else if (m_wallet_model->wallet().isLockedCoin(outpoint)) remaining_text = tr("Locked — not renewable");
-            else if (remaining <= 0) remaining_text = tr("Expired — not renewable");
+            else if (coin.is_expired || remaining <= 0) remaining_text = tr("Expired — not renewable");
             else {
                 const double years = remaining / (6.0 * 24 * 365.25);
                 remaining_text = tr("%1 blocks (~%2 years)").arg(remaining).arg(years, 0, 'f', 1);
@@ -266,7 +266,7 @@ bool RenewUtxos::validateSelection(std::span<const CoinRow> selected)
     for (size_t i = 0; valid && i < current.size(); ++i) {
         const auto& coin = current[i];
         valid = coin.block_height >= 0 && coin.depth_in_main_chain > 0 &&
-                coin.blocks_to_maturity == 0 && coin.is_spendable && coin.is_safe && !coin.is_spent &&
+                coin.blocks_to_maturity == 0 && coin.is_spendable && coin.is_safe && !coin.is_spent && !coin.is_expired &&
                 !m_wallet_model->wallet().isLockedCoin(selected[i].outpoint) &&
                 coin.txout.nValue == selected[i].amount &&
                 coin.block_height + node::recycle::EXPIRY_BLOCKS == selected[i].expiry_height;

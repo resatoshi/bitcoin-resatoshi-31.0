@@ -429,6 +429,8 @@ struct WalletTxOut
     bool is_spendable = false;
     bool is_safe = false;
     bool is_spent = false;
+    //! Recycle expiry is independent of spending and can be undone by a reorg.
+    bool is_expired = false;
 };
 
 //! Migrated wallet info

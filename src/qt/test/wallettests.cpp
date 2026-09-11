@@ -1054,6 +1054,108 @@ void WalletTests::cpuMinerOldTipTests()
     }
 }
 
+void WalletTests::renewalExpiryTests()
+{
+    TestChain100Setup test{ChainType::REGTEST, TestOpts{.extra_args={"-test=recycle"}}};
+    test.mineBlocks(100);
+    auto wallet_loader = interfaces::MakeWalletLoader(*test.m_node.chain, *Assert(test.m_node.args));
+    test.m_node.wallet_loader = wallet_loader.get();
+    m_node.setContext(&test.m_node);
+    std::shared_ptr<CWallet> wallet = wallet::CreateSyncedWallet(*test.m_node.chain,
+        test.m_node.chainman->ActiveChain(), test.coinbaseKey);
+    wallet->SetBroadcastTransactions(true);
+    std::unique_ptr<const PlatformStyle> style{PlatformStyle::instantiate("other")};
+    MiniGUI gui{m_node, style.get()};
+    gui.initModelForWallet(m_node, wallet, style.get());
+    RenewUtxos renewal{gui.walletModel.get()};
+    renewal.setBlockHeight(200);
+    auto* table = renewal.findChild<QTableWidget*>("renewUtxosTable");
+    auto* button = renewal.findChild<QPushButton*>("renewUtxosButton");
+    auto* status = renewal.findChild<QLabel*>("renewStatus");
+    QVERIFY(table && button && status);
+    QSignalSpy sent{&renewal, &RenewUtxos::coinsSent};
+    const COutPoint target{test.m_coinbase_txns.front()->GetHash(), 0};
+    const auto select_target = [&] {
+        for (int row = 0; row < table->rowCount(); ++row) {
+            auto* check = table->item(row, 0);
+            if (table->item(row, 5)->text() == QString::fromStdString(target.ToString()) &&
+                check->flags().testFlag(Qt::ItemIsEnabled)) {
+                check->setCheckState(Qt::Checked);
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto coin = [&] { return gui.walletModel->wallet().getCoins({target}).at(0); };
+    // Block 1 remains spendable at tip 200, including in the expiry block 201.
+    QCOMPARE(coin().depth_in_main_chain, 200);
+    QVERIFY(!coin().is_expired);
+    QVERIFY(!coin().is_spent);
+    QVERIFY(select_target());
+    button->click();
+    QString confirmation;
+    ConfirmSend(&confirmation, QMessageBox::Cancel);
+    button->click();
+    QVERIFY(!confirmation.isEmpty());
+    QCOMPARE(sent.count(), 0);
+
+    // Advance the real chain while the prepared transaction's confirmation
+    // dialog is open. A rejection must happen before CommitTransaction.
+    CBlockIndex* expiry_tip{nullptr};
+    size_t wallet_tx_count{0};
+    bool expired_in_dialog{false};
+    QTimer::singleShot(0, [&] {
+        test.mineBlocks(1);
+        {
+            LOCK2(wallet->cs_wallet, cs_main);
+            expiry_tip = test.m_node.chainman->ActiveChain().Tip();
+            wallet->SetLastBlockProcessed(expiry_tip->nHeight, expiry_tip->GetBlockHash());
+        }
+        SyncUpWallet(wallet, m_node);
+        expired_in_dialog = coin().is_expired && !coin().is_spent;
+        wallet_tx_count = WITH_LOCK(wallet->cs_wallet, return wallet->mapWallet.size());
+        ConfirmSend();
+    });
+    button->click();
+    QVERIFY(expired_in_dialog);
+    QVERIFY(status->text().contains("Selected UTXOs changed"));
+    QCOMPARE(sent.count(), 0);
+    QCOMPARE(WITH_LOCK(wallet->cs_wallet, return wallet->mapWallet.size()), wallet_tx_count);
+    QVERIFY(!select_target());
+
+    // Disconnect the expiry block: expiry must not remain cached or mark the
+    // input spent. A new preview and actual submission should work again.
+    QVERIFY(expiry_tip);
+    BlockValidationState state;
+    auto& chainstate = test.m_node.chainman->ActiveChainstate();
+    QVERIFY(chainstate.InvalidateBlock(state, expiry_tip));
+    QVERIFY(chainstate.ActivateBestChain(state));
+    {
+        LOCK2(wallet->cs_wallet, cs_main);
+        const auto* tip = test.m_node.chainman->ActiveChain().Tip();
+        QCOMPARE(tip->nHeight, 200);
+        wallet->SetLastBlockProcessed(tip->nHeight, tip->GetBlockHash());
+    }
+    SyncUpWallet(wallet, m_node);
+    QVERIFY(!coin().is_expired);
+    QVERIFY(!coin().is_spent);
+    QVERIFY(QMetaObject::invokeMethod(&renewal, "refresh", Qt::DirectConnection));
+    QVERIFY(select_target());
+    button->click();
+    ConfirmSend();
+    button->click();
+    QCOMPARE(sent.count(), 1);
+    QVERIFY(coin().is_spent);
+    bool accepted{false};
+    {
+        LOCK(wallet->cs_wallet);
+        for (const auto& [txid, wtx] : wallet->mapWallet) {
+            if (wtx.tx->vin.size() == 1 && wtx.tx->vin[0].prevout == target) accepted = wtx.InMempool();
+        }
+    }
+    QVERIFY(accepted);
+}
+
 void WalletTests::renewalStatusTests()
 {
     // Use an independent funded chain: the original send-dialog fixture
