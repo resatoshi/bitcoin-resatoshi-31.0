@@ -67,7 +67,7 @@ Uninstalling the program does not need to delete the wallet or chain data.
 Back up the wallet before deliberately removing the data directory.
 
 
-## CPU mining implementation (local 31.0.4 build)
+## CPU mining implementation (local 31.0.5 build)
 
 Workers use the local Core mining interface, reuse a block template for up to
 one second, and assign a unique coinbase extranonce to every template. Work is
@@ -90,9 +90,11 @@ above genesis. Normal block download and validation continue unchanged.
 
 The GUI manages bootstrap connections once per node, independently of the
 number of open wallets. After initial synchronization finishes, three
-non-bootstrap, handshake-complete peers advertising block-serving services
-must each remain eligible for 60 seconds before bootstraps are disconnected.
-Discovery-only, feeler and private-broadcast connections do not count. Each
+non-bootstrap, handshake-complete automatic outbound peers advertising block
+services must each remain eligible for 60 seconds before bootstraps disconnect.
+They must have routable addresses in three distinct Core network groups (without
+an AS map). Inbound, manual, discovery-only, feeler and private-broadcast
+connections do not count. Distinct groups do not prove distinct operators. Each
 replacement connection starts its own interval. A temporarily unavailable
 statistics snapshot skips that observation rather than resetting the interval.
 Remaining peers are checked again before each disconnect. Nodes are not banned.
@@ -104,11 +106,11 @@ chain parameters. The manager unregisters only entries it added, preserving
 user-configured addnodes. Explicit `-connect` configurations disable this
 automatic policy, and disabling networking unregisters its pending entries.
 
-When the peer count reaches zero, the manager immediately requests bootstrap
-registration again. Actual connection scheduling belongs to Core: its added-node
+When no bootstrap or qualifying outbound peer remains, the manager immediately
+requests bootstrap registration again, even if inbound connections remain. Actual connection scheduling belongs to Core: its added-node
 loop normally polls every two seconds and waits 60 seconds after attempts.
 Until handoff, Core continues retrying registered seeds even with one or two
-ordinary peers. After handoff, one or two peers do not register seeds again.
+ordinary peers. After handoff, one or two qualifying outbound peers do not register seeds again.
 Core's normal discovery may reconnect a bootstrap, which is retired again
 while the replacement conditions still hold.
 
@@ -130,9 +132,9 @@ relay connection are required.
 
 When Core still reports initial block download because the tip is old, a
 block-serving peer must have announced a header at the local tip height.
-A handshake alone does not suffice above genesis. Connected peers advertising
-a higher starting/header height, headers presynchronization, or block downloads
-in flight keep the miner paused. Core's existing initial header request starts
+A handshake alone does not suffice above genesis. Validated higher headers and
+known block downloads in flight keep the miner paused. Untrusted VERSION heights
+and headers presynchronization cannot veto readiness. Core's existing initial header request starts
 from the preceding block, so an up-to-date peer also announces an old tip when
 no new blocks exist. The existing genesis bootstrap exception is retained.
 

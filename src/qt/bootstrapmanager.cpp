@@ -11,7 +11,9 @@
 #include <net.h>
 #include <net_processing.h>
 #include <netbase.h>
+#include <netgroup.h>
 
+#include <algorithm>
 #include <exception>
 
 BootstrapPolicy::Action BootstrapPolicy::update(Clock::time_point now, const std::vector<Peer>& peers, bool network_active, bool synchronized)
@@ -23,7 +25,8 @@ BootstrapPolicy::Action BootstrapPolicy::update(Clock::time_point now, const std
         m_had_peers = false;
         return action;
     }
-    if (peers.empty()) {
+    // An inbound-only remainder must not suppress bootstrap recovery.
+    if (std::none_of(peers.begin(), peers.end(), [](const Peer& peer) { return peer.bootstrap || peer.ready; })) {
         m_ready_since.clear();
         if (m_had_peers || !m_last_retry || now - *m_last_retry >= std::chrono::seconds{60}) {
             action.reconnect = true;
@@ -105,6 +108,8 @@ void BootstrapManager::poll(Clock::time_point now)
     }
     std::vector<BootstrapPolicy::Peer> peers;
     std::set<int64_t> present;
+    const auto groups = NetGroupManager::NoAsmap();
+    std::set<std::vector<unsigned char>> ready_groups;
     for (const auto& item : stats) {
         const auto& peer{std::get<0>(item)};
         present.insert(peer.nodeid);
@@ -116,12 +121,16 @@ void BootstrapManager::poll(Clock::time_point now)
             bootstrap |= peer.m_addr_name == seed || peer.m_addr_name == dotted;
         }
         if (bootstrap) m_bootstrap_ids.insert(peer.nodeid);
-        const bool useful{peer.m_conn_type != ConnectionType::FEELER &&
-                          peer.m_conn_type != ConnectionType::ADDR_FETCH &&
-                          peer.m_conn_type != ConnectionType::PRIVATE_BROADCAST};
+        // Inbound connections and user-supplied addnodes must not manufacture
+        // the independent replacements that retire our bootstrap connections.
+        const bool useful{peer.m_conn_type == ConnectionType::OUTBOUND_FULL_RELAY ||
+                          peer.m_conn_type == ConnectionType::BLOCK_RELAY};
         const bool serves_blocks{std::get<1>(item) &&
             (std::get<2>(item).their_services & (NODE_NETWORK | NODE_NETWORK_LIMITED)) != 0};
-        peers.push_back({peer.nodeid, bootstrap, resolved && useful && serves_blocks && m_node.isConnected(peer.nodeid)});
+        const bool ready{resolved && !bootstrap && useful && serves_blocks &&
+            m_node.isConnected(peer.nodeid) && peer.addr.IsRoutable() &&
+            ready_groups.insert(groups.GetGroup(peer.addr)).second};
+        peers.push_back({peer.nodeid, bootstrap, ready});
     }
     std::erase_if(m_bootstrap_ids, [&](int64_t id) { return !present.contains(id); });
     int headers{0};

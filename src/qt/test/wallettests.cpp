@@ -43,6 +43,7 @@
 #include <chrono>
 #include <memory>
 #include <latch>
+#include <limits>
 
 #include <QAbstractButton>
 #include <QAction>
@@ -694,7 +695,7 @@ void WalletTests::bootstrapPolicyTests()
     four.push_back({6, true, true}); // Both bootstrap endpoints can be retired.
     QVERIFY(policy.update(start + 385s, four, true).disconnect == (std::vector<int64_t>{1, 6}));
     QVERIFY(!policy.update(start + 386s, {{2, false, true}}, true).reconnect);
-    QVERIFY(policy.update(start + 387s, {}, true).reconnect); // No extra 60s delay after the last peer disappears.
+    QVERIFY(policy.update(start + 387s, {{7, false, false}}, true).reconnect); // Inbound-only connections cannot suppress recovery.
     QVERIFY(!policy.update(start + 388s, {}, false).reconnect);
     QVERIFY(policy.update(start + 389s, {}, true).reconnect);
 }
@@ -706,10 +707,11 @@ void WalletTests::bootstrapManagerTests()
     TestingSetup test{ChainType::MAIN};
     m_node.setContext(&test.m_node);
     auto& connman = static_cast<ConnmanTestMsg&>(*test.m_node.connman);
-    const auto add_peer = [&](int64_t id, const char* ip, const std::string& name) {
+    const auto add_peer = [&](int64_t id, const char* ip, const std::string& name,
+                              ConnectionType type = ConnectionType::OUTBOUND_FULL_RELAY) {
         auto address = LookupNumeric(ip, 19333);
         auto* peer = new CNode{id, nullptr, CAddress{address, NODE_NETWORK}, 0, 0, CService{}, name,
-                              ConnectionType::OUTBOUND_FULL_RELAY, false, 0};
+                              type, false, 0};
         {
             LOCK(NetEventsInterface::g_msgproc_mutex);
             connman.Handshake(*peer, true, ServiceFlags(NODE_NETWORK | NODE_WITNESS),
@@ -731,9 +733,9 @@ void WalletTests::bootstrapManagerTests()
     manager.poll(start + 1s);
     auto* bootstrap_ip = add_peer(1, "192.0.2.10", "192.0.2.10:19333");
     auto* bootstrap_name = add_peer(5, "192.0.2.11", "resatoshi-seed.duckdns.org:19333");
-    auto* regular1 = add_peer(2, "192.0.2.20", "192.0.2.20:19333");
-    auto* regular2 = add_peer(3, "192.0.2.21", "192.0.2.21:19333");
-    auto* regular3 = add_peer(4, "192.0.2.22", "192.0.2.22:19333");
+    auto* regular1 = add_peer(2, "8.8.8.8", "8.8.8.8:19333");
+    auto* regular2 = add_peer(3, "8.8.4.4", "8.8.4.4:19333");
+    auto* regular3 = add_peer(4, "1.1.1.1", "1.1.1.1:19333");
     // Exercise Core's cached resolution using a fake resolver and existing
     // connections. No DNS or socket connection can reach the outside network.
     const auto original_lookup = g_dns_lookup;
@@ -765,7 +767,18 @@ void WalletTests::bootstrapManagerTests()
     }
     QVERIFY(!m_node.isInitialBlockDownload());
     SetMockTime(0);
+    add_peer(7, "9.9.9.9", "inbound-a", ConnectionType::INBOUND);
+    add_peer(8, "4.2.2.2", "inbound-b", ConnectionType::INBOUND);
+    add_peer(9, "208.67.222.222", "inbound-c", ConnectionType::INBOUND);
     manager.poll(start + 101s);
+    manager.poll(start + 161s);
+    // Three inbound peers and duplicate outbound network groups cannot retire
+    // bootstrap. All addresses are synthetic test connections, without sockets.
+    QVERIFY(!bootstrap_ip->fDisconnect);
+    QCOMPARE(removes, 0);
+    regular2->fDisconnect = true;
+    regular2 = add_peer(10, "9.9.9.10", "independent-outbound");
+    manager.poll(start + 162s);
     // A failed try-lock observation must not erase the 60-second interval.
     std::latch locked{1}, unlock{1};
     std::thread busy{[&] {
@@ -774,29 +787,30 @@ void WalletTests::bootstrapManagerTests()
         unlock.wait();
     }};
     locked.wait();
-    manager.poll(start + 130s);
+    manager.poll(start + 191s);
     unlock.count_down();
     busy.join();
-    manager.poll(start + 160s);
+    manager.poll(start + 221s);
     QVERIFY(!bootstrap_ip->fDisconnect);
     QVERIFY(!bootstrap_name->fDisconnect);
-    manager.poll(start + 161s);
+    manager.poll(start + 222s);
     QVERIFY(bootstrap_ip->fDisconnect);
     QVERIFY(bootstrap_name->fDisconnect);
     QCOMPARE(removes, 2);
     QVERIFY(!regular1->fDisconnect && !regular2->fDisconnect && !regular3->fDisconnect);
     clear_peers();
-    add_peer(6, "192.0.2.23", "192.0.2.23:19333");
-    manager.poll(start + 162s);
+    add_peer(6, "4.2.2.2", "4.2.2.2:19333");
+    manager.poll(start + 223s);
     QCOMPARE(connects, 2);
     clear_peers();
-    manager.poll(start + 163s);
+    add_peer(11, "8.8.8.8", "inbound-remainder", ConnectionType::INBOUND);
+    manager.poll(start + 224s);
     QTRY_COMPARE_WITH_TIMEOUT(connects, 4, 5000);
     m_node.setNetworkActive(false);
-    manager.poll(start + 224s);
+    manager.poll(start + 285s);
     QCOMPARE(connects, 4);
     m_node.setNetworkActive(true);
-    manager.poll(start + 225s);
+    manager.poll(start + 286s);
     QTRY_COMPARE_WITH_TIMEOUT(connects, 6, 5000);
     // Core registration is nonblocking and manager destruction preserves
     // an entry explicitly supplied by the user.
@@ -862,6 +876,20 @@ void WalletTests::cpuMinerOldTipTests()
         // local mining decision is relaxed, after actual P2P header exchange.
         QVERIFY(m_node.isInitialBlockDownload());
         QVERIFY(m_node.isReadyToMine());
+        auto* attacker = new CNode{1, nullptr, CAddress{}, 0, 0, CService{}, "false-height",
+                                  ConnectionType::INBOUND, false, 0};
+        {
+            LOCK(NetEventsInterface::g_msgproc_mutex);
+            connman.Handshake(*attacker, true, NODE_NONE,
+                              ServiceFlags(NODE_NETWORK | NODE_WITNESS), PROTOCOL_VERSION, true,
+                              std::numeric_limits<int32_t>::max());
+        }
+        connman.AddTestNode(*attacker);
+        CNodeStateStats attacker_stats;
+        QVERIFY(test.m_node.peerman->GetNodeStateStats(attacker->GetId(), attacker_stats));
+        QCOMPARE(attacker_stats.m_starting_height, std::numeric_limits<int32_t>::max());
+        QVERIFY(m_node.isConnected(attacker->GetId()));
+        QVERIFY(m_node.isReadyToMine());
         miner.setPaused(false);
         QTRY_VERIFY_WITH_TIMEOUT(miner.hashes() > 0 || !miner.error().empty(), 5000);
         m_node.setNetworkActive(false);
@@ -873,6 +901,7 @@ void WalletTests::cpuMinerOldTipTests()
         miner.stop();
         QVERIFY2(miner.error().empty(), miner.error().c_str());
         SetMockTime(0);
+        test.m_node.peerman->FinalizeNode(*attacker);
         test.m_node.peerman->FinalizeNode(*peer);
         connman.ClearTestNodes();
     }

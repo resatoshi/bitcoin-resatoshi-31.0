@@ -295,8 +295,10 @@ public:
         for (const auto& [peer, available, state] : peers) {
             if (!isConnected(peer.nodeid)) continue;
             if (!available) return false;
-            if (state.m_starting_height > height || state.nSyncHeight > height ||
-                state.presync_height >= 0 || !state.vHeightInFlight.empty()) return false;
+            // VERSION heights and presync headers are untrusted claims, not
+            // evidence that a better chain exists. Validated headers/work are
+            // checked above; pending known blocks must still finish syncing.
+            if (state.nSyncHeight > height || !state.vHeightInFlight.empty()) return false;
             const bool relay = peer.m_conn_type != ConnectionType::FEELER &&
                 peer.m_conn_type != ConnectionType::ADDR_FETCH &&
                 peer.m_conn_type != ConnectionType::PRIVATE_BROADCAST;
