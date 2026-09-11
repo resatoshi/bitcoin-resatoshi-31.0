@@ -48,6 +48,7 @@
 #include <core_io.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <latch>
@@ -725,9 +726,9 @@ void WalletTests::cpuMinerMainnetTests()
 void WalletTests::cpuMinerHashTests()
 {
     BasicTestingSetup test{ChainType::REGTEST};
-    for (int i = 0; i < 100; ++i) {
+    const auto check_header = [&](int32_t version) {
         CBlockHeader header;
-        header.nVersion = test.m_rng.rand32();
+        header.nVersion = version;
         header.hashPrevBlock = test.m_rng.rand256();
         header.hashMerkleRoot = test.m_rng.rand256();
         header.nTime = test.m_rng.rand32();
@@ -737,6 +738,13 @@ void WalletTests::cpuMinerHashTests()
             header.nNonce = nonce;
             QVERIFY(hasher.hash(nonce) == header.GetHash());
         }
+    };
+    for (const int32_t version : {std::numeric_limits<int32_t>::min(), int32_t{-1}, int32_t{0}, int32_t{1}, std::numeric_limits<int32_t>::max()}) {
+        check_header(version);
+    }
+    for (int i = 0; i < 100; ++i) {
+        // Preserve all 32 version bits, including negative versions, without an implicit sign change.
+        check_header(static_cast<int32_t>(test.m_rng.rand32()));
     }
 
     CBlockHeader header;
