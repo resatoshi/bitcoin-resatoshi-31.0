@@ -10,6 +10,7 @@
 #include <coins.h>
 #include <common/args.h>
 #include <consensus/amount.h>
+#include <consensus/params.h>
 #include <crypto/muhash.h>
 #include <dbwrapper.h>
 #include <index/base.h>
@@ -17,6 +18,7 @@
 #include <interfaces/chain.h>
 #include <interfaces/types.h>
 #include <kernel/coinstats.h>
+#include <node/recycle.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
@@ -28,6 +30,7 @@
 #include <util/log.h>
 #include <validation.h>
 
+#include <algorithm>
 #include <compare>
 #include <limits>
 #include <span>
@@ -50,6 +53,7 @@ struct DBVal {
     uint64_t bogo_size{0};
     CAmount total_amount{0};
     CAmount total_subsidy{0};
+    arith_uint256 total_recycle_rewards{0};
     arith_uint256 total_prevout_spent_amount{0};
     arith_uint256 total_new_outputs_ex_coinbase_amount{0};
     arith_uint256 total_coinbase_amount{0};
@@ -77,6 +81,12 @@ struct DBVal {
         READWRITE(obj.total_unspendables_bip30);
         READWRITE(obj.total_unspendables_scripts);
         READWRITE(obj.total_unspendables_unclaimed_rewards);
+        if (Params().GetConsensus().recycle_enabled) {
+            uint256 recycled;
+            SER_WRITE(obj, recycled = ArithToUint256(obj.total_recycle_rewards));
+            READWRITE(recycled);
+            SER_READ(obj, obj.total_recycle_rewards = UintToArith256(recycled));
+        }
 
         SER_READ(obj, obj.total_prevout_spent_amount = UintToArith256(prevout_spent));
         SER_READ(obj, obj.total_new_outputs_ex_coinbase_amount = UintToArith256(new_outputs));
@@ -100,7 +110,10 @@ CoinStatsIndex::CoinStatsIndex(std::unique_ptr<interfaces::Chain> chain, size_t 
         LogWarning("Old version of coinstatsindex found at %s. This folder can be safely deleted unless you " \
             "plan to downgrade your node to version 29 or lower.", fs::PathToString(old_path));
     }
-    fs::path path{gArgs.GetDataDirNet() / "indexes" / "coinstatsindex"};
+    // Rebuild recycle-aware statistics independently; never reuse an old
+    // index whose expiry events and reward accounting were omitted.
+    const auto directory = Params().GetConsensus().recycle_enabled ? "coinstatsindex-recycle-v1" : "coinstatsindex";
+    fs::path path{gArgs.GetDataDirNet() / "indexes" / directory};
     fs::create_directories(path);
 
     m_db = std::make_unique<CoinStatsIndex::DB>(path / "db", n_cache_size, f_memory, f_wipe);
@@ -179,12 +192,33 @@ bool CoinStatsIndex::CustomAppend(const interfaces::BlockInfo& block)
         m_total_unspendables_genesis_block += block_subsidy;
     }
 
+    const auto& consensus{Params().GetConsensus()};
+    if (consensus.recycle_enabled && block.height > consensus.recycle_expiry_blocks) {
+        if (!block.undo_data || !block.data || block.undo_data->vtxundo.size() != block.data->vtx.size()) return false;
+        CAmount pool_before{0};
+        std::vector<std::pair<COutPoint, Coin>> expired;
+        if (!node::recycle::ReadUndo(block.undo_data->vtxundo.back(), pool_before, expired)) return false;
+        for (const auto& [outpoint, coin] : expired) {
+            RemoveCoinHash(m_muhash, outpoint, coin);
+            --m_transaction_output_count;
+            m_total_amount -= coin.out.nValue;
+            m_bogo_size -= GetBogoSize(coin.out.scriptPubKey);
+        }
+        CAmount fees{0};
+        for (size_t i{1}; i < block.data->vtx.size(); ++i) {
+            for (const auto& coin : block.undo_data->vtxundo.at(i - 1).vprevout) fees += coin.out.nValue;
+            fees -= block.data->vtx[i]->GetValueOut();
+        }
+        const CAmount recycled{std::max<CAmount>(0, block.data->vtx[0]->GetValueOut() - block_subsidy - fees)};
+        m_total_recycle_rewards += recycled;
+    }
+
     // If spent prevouts + block subsidy are still a higher amount than
     // new outputs + coinbase + current unspendable amount this means
     // the miner did not claim the full block reward. Unclaimed block
     // rewards are also unspendable.
     const CAmount temp_total_unspendable_amount{m_total_unspendables_genesis_block + m_total_unspendables_bip30 + m_total_unspendables_scripts + m_total_unspendables_unclaimed_rewards};
-    const arith_uint256 unclaimed_rewards{(m_total_prevout_spent_amount + m_total_subsidy) - (m_total_new_outputs_ex_coinbase_amount + m_total_coinbase_amount + temp_total_unspendable_amount)};
+    const arith_uint256 unclaimed_rewards{(m_total_prevout_spent_amount + m_total_subsidy + m_total_recycle_rewards) - (m_total_new_outputs_ex_coinbase_amount + m_total_coinbase_amount + temp_total_unspendable_amount)};
     assert(unclaimed_rewards <= arith_uint256(std::numeric_limits<CAmount>::max()));
     m_total_unspendables_unclaimed_rewards += static_cast<CAmount>(unclaimed_rewards.GetLow64());
 
@@ -194,6 +228,7 @@ bool CoinStatsIndex::CustomAppend(const interfaces::BlockInfo& block)
     value.second.bogo_size = m_bogo_size;
     value.second.total_amount = m_total_amount;
     value.second.total_subsidy = m_total_subsidy;
+    value.second.total_recycle_rewards = m_total_recycle_rewards;
     value.second.total_prevout_spent_amount = m_total_prevout_spent_amount;
     value.second.total_new_outputs_ex_coinbase_amount = m_total_new_outputs_ex_coinbase_amount;
     value.second.total_coinbase_amount = m_total_coinbase_amount;
@@ -293,6 +328,7 @@ bool CoinStatsIndex::CustomInit(const std::optional<interfaces::BlockRef>& block
         m_bogo_size = entry.bogo_size;
         m_total_amount = entry.total_amount;
         m_total_subsidy = entry.total_subsidy;
+        m_total_recycle_rewards = entry.total_recycle_rewards;
         m_total_prevout_spent_amount = entry.total_prevout_spent_amount;
         m_total_new_outputs_ex_coinbase_amount = entry.total_new_outputs_ex_coinbase_amount;
         m_total_coinbase_amount = entry.total_coinbase_amount;
@@ -381,6 +417,15 @@ bool CoinStatsIndex::RevertBlock(const interfaces::BlockInfo& block)
         }
     }
 
+    const auto& consensus{Params().GetConsensus()};
+    if (consensus.recycle_enabled && block.height > consensus.recycle_expiry_blocks) {
+        if (block.undo_data->vtxundo.size() != block.data->vtx.size()) return false;
+        CAmount pool_before{0};
+        std::vector<std::pair<COutPoint, Coin>> expired;
+        if (!node::recycle::ReadUndo(block.undo_data->vtxundo.back(), pool_before, expired)) return false;
+        for (const auto& [outpoint, coin] : expired) ApplyCoinHash(m_muhash, outpoint, coin);
+    }
+
     // Check that the rolled back muhash is consistent with the DB read out
     uint256 out;
     m_muhash.Finalize(out);
@@ -391,6 +436,7 @@ bool CoinStatsIndex::RevertBlock(const interfaces::BlockInfo& block)
     m_total_amount = read_out.second.total_amount;
     m_bogo_size = read_out.second.bogo_size;
     m_total_subsidy = read_out.second.total_subsidy;
+    m_total_recycle_rewards = read_out.second.total_recycle_rewards;
     m_total_prevout_spent_amount = read_out.second.total_prevout_spent_amount;
     m_total_new_outputs_ex_coinbase_amount = read_out.second.total_new_outputs_ex_coinbase_amount;
     m_total_coinbase_amount = read_out.second.total_coinbase_amount;

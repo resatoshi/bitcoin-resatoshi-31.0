@@ -45,6 +45,7 @@ void ReadRegTestArgs(const ArgsManager& args, CChainParams::RegTestOptions& opti
 {
     if (auto value = args.GetBoolArg("-fastprune")) options.fastprune = *value;
     if (HasTestOption(args, "bip94")) options.enforce_bip94 = true;
+    if (HasTestOption(args, "recycle")) options.recycle = true;
 
     for (const std::string& arg : args.GetArgs("-testactivationheight")) {
         const auto found{arg.find('@')};

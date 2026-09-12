@@ -313,7 +313,7 @@ RPCHelpMan lockunspent()
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, vout index out of bounds");
         }
 
-        if (pwallet->IsSpent(outpt)) {
+        if (pwallet->IsUnavailable(outpt)) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, expected unspent output");
         }
 
@@ -498,6 +498,8 @@ RPCHelpMan listunspent()
                             {RPCResult::Type::STR_HEX, "redeemScript", /*optional=*/true, "The redeem script if the output script is P2SH"},
                             {RPCResult::Type::STR, "witnessScript", /*optional=*/true, "witness script if the output script is P2WSH or P2SH-P2WSH"},
                             {RPCResult::Type::BOOL, "spendable", "(DEPRECATED) Always true"},
+                            {RPCResult::Type::NUM, "expiry_height", /*optional=*/true, "Block height at which this output expires"},
+                            {RPCResult::Type::NUM, "blocks_until_expiry", /*optional=*/true, "Blocks remaining before expiry"},
                             {RPCResult::Type::BOOL, "solvable", "Whether we know how to spend this output, ignoring the lack of keys"},
                             {RPCResult::Type::BOOL, "reused", /*optional=*/true, "(only present if avoid_reuse is set) Whether this output is reused/dirty (sent to an address that was previously spent from)"},
                             {RPCResult::Type::STR, "desc", /*optional=*/true, "(only when solvable) A descriptor for spending this output"},
@@ -662,6 +664,10 @@ RPCHelpMan listunspent()
         entry.pushKV("scriptPubKey", HexStr(scriptPubKey));
         entry.pushKV("amount", ValueFromAmount(out.txout.nValue));
         entry.pushKV("confirmations", out.depth);
+        if (const auto lifetime{pwallet->chain().utxoExpiryBlocks()}; lifetime && out.depth > 0) {
+            entry.pushKV("expiry_height", int64_t{pwallet->GetLastBlockHeight()} - out.depth + 1 + *lifetime);
+            entry.pushKV("blocks_until_expiry", *lifetime - out.depth + 1);
+        }
         if (!out.depth) {
             size_t ancestor_count, unused_cluster_count, ancestor_size;
             CAmount ancestor_fees;

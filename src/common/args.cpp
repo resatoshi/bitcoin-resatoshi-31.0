@@ -741,6 +741,7 @@ std::string HelpMessageOpt(const std::string &option, const std::string &message
 }
 
 const std::vector<std::string> TEST_OPTIONS_DOC{
+    "recycle (enable UTXO recycling with a 200-block lifetime on regtest)",
     "addrman (use deterministic addrman)",
     "reindex_after_failure_noninteractive_yes (When asked for a reindex after failure interactively, simulate as-if answered with 'yes')",
     "bip94 (enforce BIP94 consensus rules)",

@@ -37,6 +37,7 @@ private:
     uint64_t m_bogo_size{0};
     CAmount m_total_amount{0};
     CAmount m_total_subsidy{0};
+    arith_uint256 m_total_recycle_rewards{0};
     arith_uint256 m_total_prevout_spent_amount{0};
     arith_uint256 m_total_new_outputs_ex_coinbase_amount{0};
     arith_uint256 m_total_coinbase_amount{0};

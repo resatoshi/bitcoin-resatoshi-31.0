@@ -345,6 +345,11 @@ static bool rest_spent_txouts(const std::any& context, HTTPRequest* req, const s
     if (pblockindex->nHeight > 0 && !chainman->m_blockman.ReadBlockUndo(block_undo, *pblockindex)) {
         return RESTERR(req, HTTP_NOT_FOUND, hashStr + " undo not available");
     }
+    if (chainman->GetConsensus().recycle_enabled &&
+        pblockindex->nHeight > chainman->GetConsensus().recycle_expiry_blocks &&
+        block_undo.vtxundo.size() == pblockindex->nTx) {
+        block_undo.vtxundo.pop_back(); // Internal recycle state is not a spent transaction output.
+    }
 
     switch (rf) {
     case RESTResponseFormat::BINARY: {

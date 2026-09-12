@@ -49,6 +49,8 @@ public:
 
     //! Whether an unsupported database format is used.
     bool NeedsUpgrade();
+    bool RecycleStateReady() const;
+    void MarkRecycleStateReady();
     size_t EstimateSize() const override;
 
     //! Dynamically alter the underlying leveldb cache size.

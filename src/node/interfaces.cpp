@@ -551,6 +551,11 @@ public:
         const int height{WITH_LOCK(::cs_main, return chainman().ActiveChain().Height())};
         return height >= 0 ? std::optional{height} : std::nullopt;
     }
+    std::optional<int> utxoExpiryBlocks() override
+    {
+        const auto& consensus = chainman().GetConsensus();
+        return consensus.recycle_enabled ? std::optional{consensus.recycle_expiry_blocks} : std::nullopt;
+    }
     uint256 getBlockHash(int height) override
     {
         LOCK(::cs_main);
